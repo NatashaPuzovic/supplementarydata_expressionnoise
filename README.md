@@ -1,9 +1,8 @@
-# SupplementaryData_ExpressionNoise
+# Supplementary data: evolution of expression noise in gene regulatory networks
 This repository contains the code to reproduce the statistical analysis of the following publication (https://doi.org/10.1371/journal.pcbi.1010982):
+"Being noisy in a crowd: differential selective pressure on gene expression noise in model gene regulatory networks"
 
-"Being noisy in a crowd: differential selective pressure on gene expression noise in model gene regulatory networks 
-
-We used evolutionary simulations to study the evolution of gene-specific expression noise in gene regulatory networks and found that local and global network properties affect the evolvability of gene-specific expression noise.
+Evolutionary simulations were used to study the evolution of gene-specific expression noise in gene regulatory networks and local and global network properties were found to affect the evolvability of gene-specific expression noise.
 
 ## Installation and data download
 Clone this repo:
