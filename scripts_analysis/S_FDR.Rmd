@@ -1,0 +1,508 @@
+---
+title: "Simulations results: FDR"
+author: "Natasha Puzovic (puzovic@evolbio.mpg.de)"
+date: "05 Jul, 2022"
+output:
+  html_document:
+    df_print: paged
+    number_sections: yes
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+  
+# Read data
+Read the genotype, phenotype and fitness information of evolved populations of 2000 random network topology samples.
+
+```{r read-data}
+set.seed(2)
+resultsFolder = "20210609_ER_40node_0.05dens"
+path = paste0("../results/", resultsFolder)
+
+# read results and split into sel & neutr
+allNetsResults <- read.table(paste0(path, "/allNetsResults_prepped.txt"), sep = "\t", header = TRUE)
+selResults <- allNetsResults[allNetsResults$scen == "sel", ]
+neutrResults <- allNetsResults[allNetsResults$scen == "neu", ]
+selResultsNoNA <- selResults[!is.na(selResults$relDeltaVar_10000), ]
+```
+
+## Load packages, functions & colors
+
+```{r load-packages}
+# Package list
+packages <- c("nlme", 
+              "MuMIn", # for r.squared in lme models
+              "ggplot2",
+              "ggpubr", # for the pubclean theme
+              "ggridges", 
+              "gridExtra",
+              "cowplot", # for arranging plots
+              "infotheo",
+              "lme4", 
+              "car", # for vif measure
+              "RColorBrewer", # for color palettes
+              "latex2exp", # for latex notation in the plots
+              "reshape2", 
+              "dplyr",
+              "rstatix", # for partial eta for lms
+              "formattable", # for nice tables
+              "htmltools", # for outputting the table
+              "webshot") # for outputting the table
+
+# Install packages not yet installed
+installed_packages <- packages %in% rownames(installed.packages())
+if (any(installed_packages == FALSE)) {
+  install.packages(packages[!installed_packages])
+}
+
+# Packages loading
+invisible(lapply(packages, library, character.only = TRUE))
+
+# MI 
+calcInformation <- function (v1, v2, binNum) {
+  
+  # discretize 
+  d_v1 <- discretize(v1, nbins = binNum);
+  d_v2 <- discretize(v2, nbins = binNum)
+  
+  # mutual information
+  I_v1v2 <- mutinformation(d_v1, d_v2);
+  
+  return("MI" = I_v1v2)
+}
+
+# colors for plots
+noiseColor = "#01665e"
+genotypeColor = "#7b3294"
+phenotypeColor = "#d95f0e"
+fitnessColor = "#e78ac3"
+neutralityColor = "darkgray"
+customGreenAIC = "#41ab5d"
+
+# bin numbers and number of permutations
+binNum = 30
+numPermutations = 1000
+```
+
+# Evolution of phenotypes (selection)
+## Mutual Information
+
+```{r mi-permutations-sel}
+# observed MI
+obs_MI_absInStrT_sqrt <- calcInformation(selResults$relDeltaVar_10000, 
+                                         selResults$absInStrT_sqrt, binNum)
+obs_MI_absOutStrT_sqrt <- calcInformation(selResults$relDeltaVar_10000, 
+                                          selResults$absOutStrT_sqrt, binNum)
+
+# create MI null distributions from permutations
+MI_nullDistr_absInStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+MI_nullDistr_absOutStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+
+for(permNum in 1:numPermutations)
+{
+  MI_nullDistr_absInStrT_sqrt[permNum] <- 
+    calcInformation(selResults$relDeltaVar_10000, 
+                    sample(selResults$absInStrT_sqrt, 
+                           size = length(selResults$absInStrT_sqrt)),
+                    binNum)
+  MI_nullDistr_absOutStrT_sqrt[permNum] <- 
+    calcInformation(selResults$relDeltaVar_10000, 
+                    sample(selResults$absOutStrT_sqrt, 
+                           size = length(selResults$absOutStrT_sqrt)),
+                    binNum)
+}
+
+# pvals for observed MI and R 
+pval_MI_absInStrT <- 
+  (length(which(MI_nullDistr_absInStrT_sqrt > obs_MI_absInStrT_sqrt)) + 1)/numPermutations
+pval_MI_absOutStrT <-
+  (length(which(MI_nullDistr_absOutStrT_sqrt > obs_MI_absOutStrT_sqrt)) + 1)/numPermutations
+
+# title
+if(pval_MI_absInStrT == 1e-04) {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_absInStrT_sqrt, digits = 2), "; p = 10^{-4}"))
+} else {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_absInStrT_sqrt, digits = 2), "; p = ",  pval_MI_absInStrT))
+}
+
+if(pval_MI_absOutStrT == 1e-04) {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_absOutStrT_sqrt, digits = 2), "; p = 10^{-4}"))
+} else {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_absOutStrT_sqrt, digits = 2), "; p = ",  pval_MI_absOutStrT))
+}
+```
+
+
+```{r calc-partial-R2-sel}
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                data = selResultsNoNA,
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net,
+                method = "ML") 
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+
+lmeModel_null_absInStr <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt, 
+                data = selResultsNoNA,
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net,
+                method = "ML") 
+lmeModel_null_absOutStr <- lme(sqrt(relDeltaVar_10000 + 1) ~ absOutStrT_sqrt, 
+                data = selResultsNoNA,
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net,
+                method = "ML") 
+
+# partical R^2_{m} for instrength
+partial_R2m_absInStr <- r.squaredLR(lmeModel, null = lmeModel_null_absOutStr)
+
+# partical R^2_{m} for outstrength
+partial_R2m_absOutStr <- r.squaredLR(lmeModel, null = lmeModel_null_absInStr)
+```
+
+
+```{r plot-selected-model-predictions-sel}
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                data = selResultsNoNA,
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net,
+                method = "ML") 
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+print("VIF:")
+vif(lmeModel)
+
+# get fitted coefficients from the model fit
+coef_explVar1 <- signif(summary(lmeModel)$tTable[2, 1], 2)
+coef_explVar2 <- signif(summary(lmeModel)$tTable[3, 1], 2)
+
+# get p values from the model fit
+pval_explVar1 <- signif(summary(lmeModel)$tTable[2, 5], 2)
+pval_explVar2 <- signif(summary(lmeModel)$tTable[3, 5], 2)
+
+# double check that the p values are zero before renaming them
+if(summary(lmeModel)$tTable[2, 5] < 2.2e-16){pval_coef1_title = "p < 2.2 x 10^{-16}"} else
+  {pval_coef1_title = paste0("p = ", pval_explVar1)}
+if(summary(lmeModel)$tTable[3, 5] < 2.2e-16){pval_coef2_title = "p < 2.2 x 10^{-16}"} else 
+  {pval_coef2_title = paste0("p = ", pval_explVar2)}
+
+if(pval_explVar1 == 2.9e-10){pval_coef1_title = "p = 2.9 x 10^{-10}"} 
+
+coef_pval_explVar1_title <- TeX(paste0("$\\beta$ = ", round(coef_explVar1, 3), "; ", pval_coef1_title))
+coef_pval_explVar2_title <- TeX(paste0("$\\beta$ = ", coef_explVar2, "; ", pval_coef2_title))
+
+# R2m for plotting
+partial_R2m_absInStr_num <- signif(partial_R2m_absInStr[1], 2)
+partial_R2m_absOutStr_num <- signif(partial_R2m_absOutStr[1], 2)
+
+R2m_absInStr_text <- TeX(paste0("partial R^{2}_m = ", partial_R2m_absInStr_num))
+R2m_absOutStr_text <- TeX(paste0("partial R^{2}_m = ", partial_R2m_absOutStr_num))
+
+if(partial_R2m_absInStr_num == 0.00052){R2m_absInStr_text <- TeX(paste0("partial R^{2}_m = 5.2 x 10^{-4}"))} 
+
+plot_relDeltaVar_absInStr_sel <- ggplot(selResults, aes(x = absInStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  geom_abline(slope = lmeModel$coefficients[1]$fixed[2], 
+              intercept = lmeModel$coefficients[1]$fixed[1],
+              color = "black", linetype = "dashed", size = 1) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=12, face="bold"),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  labs(x = "Instrength (sqrt)", y = expression(bold("Rel."~Delta~"expr. variance (transf.)")), 
+       title = coef_pval_explVar1_title,
+       subtitle = R2m_absInStr_text) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  annotate('text', x = 0, y = 1.4, label = MI_obs_explVar1_title_with_pval, parse = TRUE, size = 4, hjust = 0) +
+  ylim(0, 1.5)
+plot_relDeltaVar_absOutStr_sel <- ggplot(selResults, aes(x = absOutStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  geom_abline(slope = lmeModel$coefficients[1]$fixed[3], 
+              intercept = lmeModel$coefficients[1]$fixed[1],
+              color = "black", linetype = "dashed", size = 1) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=12, face="bold"),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+    labs(x = "Outstrength (sqrt)", y = expression(bold("Rel."~Delta~"expr. variance (transf.)")), 
+         title = coef_pval_explVar2_title,
+         subtitle = R2m_absOutStr_text) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  annotate('text', x = 0, y = 1.4, label = MI_obs_explVar2_title_with_pval, parse = TRUE, size = 4, hjust = 0) +
+  ylim(0, 1.5)
+
+grid.arrange(plot_relDeltaVar_absInStr_sel, plot_relDeltaVar_absOutStr_sel, ncol = 2)
+```
+
+# LME permutations 
+
+## Entire dataset
+
+```{r lme-permutations-entire-dataset}
+numPermutations = 1000
+
+obs_beta_absInStrT_sqrt <- coef_explVar1
+obs_beta_absOutStrT_sqrt <- coef_explVar2
+obs_pval_absInStrT_sqrt <- pval_explVar1
+obs_pval_absOutStrT_sqrt <- pval_explVar2
+
+selResultsPermutations <- selResultsNoNA[, c("relDeltaVar_10000", "absInStrT_sqrt", "absOutStrT_sqrt", "net")]
+
+# create null distributions from permutations
+betas_nullDistr_absInStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+betas_nullDistr_absOutStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+pvals_nullDistr_absInStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+pvals_nullDistr_absOutStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+
+
+for(permNum in 1:numPermutations){
+  
+  tryCatch(
+    
+    expr = 
+    {
+      #print(paste0("Permutation: ", permNum))
+      selResultsPermutations$relDeltaVar_10000 <- sample(selResultsPermutations$relDeltaVar_10000,
+                                                     size = length(selResultsPermutations$relDeltaVar_10000),
+                                                     replace = FALSE)
+      lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                  data = selResultsPermutations,
+                  weights = varExp(form = ~absInStrT_sqrt),
+                  random = ~1|net,
+                  method = "ML")
+      # get fitted coefficients from the model fit
+      betas_nullDistr_absInStrT_sqrt[permNum] <- summary(lmeModel)$tTable[2, 1]
+      betas_nullDistr_absOutStrT_sqrt[permNum] <- summary(lmeModel)$tTable[3, 1]
+  
+      # get p values from the model fit
+      pvals_nullDistr_absInStrT_sqrt[permNum] <- summary(lmeModel)$tTable[2, 5]
+      pvals_nullDistr_absOutStrT_sqrt[permNum] <- summary(lmeModel)$tTable[3, 5]
+    }, 
+    error = function(e) # In case of error
+    { 
+      # get fitted coefficients from the model fit
+      betas_nullDistr_absInStrT_sqrt[permNum] <- NA
+      betas_nullDistr_absOutStrT_sqrt[permNum] <- NA
+  
+      # get p values from the model fit
+      pvals_nullDistr_absInStrT_sqrt[permNum] <- NA
+      pvals_nullDistr_absOutStrT_sqrt[permNum] <- NA
+      
+      message(e$message)
+    },
+    warning = function(w) # In case of warning
+    { 
+            message(w$message)
+    },
+    finally = 
+    { # Specifying final message
+            #message(paste0("Permutation ", permNum, " finished."))
+    }
+  )
+  
+}
+
+numNonconvergedFits <- sum(is.na(pvals_nullDistr_absInStrT_sqrt))
+print(paste0("Number of non-converged fits: ", numNonconvergedFits, ", out of: ", numPermutations))
+
+plot_lmePerm_In <- ggplot(data = data.frame(pvals = pvals_nullDistr_absInStrT_sqrt), aes(x = pvals)) +
+  geom_histogram(binwidth = 0.01) +
+  geom_vline(aes(xintercept = obs_pval_absInStrT_sqrt))
+plot_lmePerm_In
+plot_lmePerm_Out <- ggplot(data = data.frame(pvals = pvals_nullDistr_absOutStrT_sqrt), aes(x = pvals)) +
+  geom_histogram(binwidth = 0.01) +
+  geom_vline(aes(xintercept = obs_pval_absOutStrT_sqrt))
+plot_lmePerm_Out
+
+FDR_rate_absInStrT_sqrt <- length(which(pvals_nullDistr_absInStrT_sqrt < 0.05))/(numPermutations - numNonconvergedFits)
+print(paste0("FDR rate for instrength: ", FDR_rate_absInStrT_sqrt))
+FDR_rate_absOutStrT_sqrt <- length(which(pvals_nullDistr_absOutStrT_sqrt < 0.05))/(numPermutations - numNonconvergedFits)
+print(paste0("FDR rate for outstrength: ", FDR_rate_absOutStrT_sqrt))
+```
+
+## Within net
+
+```{r lme-permutations-within-net}
+obs_beta_absInStrT_sqrt <- coef_explVar1
+obs_beta_absOutStrT_sqrt <- coef_explVar2
+obs_pval_absInStrT_sqrt <- pval_explVar1
+obs_pval_absOutStrT_sqrt <- pval_explVar2
+
+selResultsPermutations <- selResultsNoNA[, c("relDeltaVar_10000", "absInStrT_sqrt", "absOutStrT_sqrt", "net")]
+
+# create null distributions from permutations
+betas_nullDistr_absInStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+betas_nullDistr_absOutStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+pvals_nullDistr_absInStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+pvals_nullDistr_absOutStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+
+options(dplyr.summarise.inform = FALSE) # summarize from dplyr stop from repeating grouping warning
+
+for(permNum in 1:numPermutations){
+  tryCatch(
+    expr = 
+    {
+      #print(paste0("Permutation: ", permNum))
+    
+      # permute the y values within each net
+      selResultsPermutations <- selResultsPermutations %>% 
+        group_by(net) %>% 
+        summarise(relDeltaVar_10000 = 
+                    sample(relDeltaVar_10000, size = length(relDeltaVar_10000), replace = FALSE),
+                  absInStrT_sqrt = absInStrT_sqrt,
+                  absOutStrT_sqrt = absOutStrT_sqrt,
+                  net = net)
+      
+      lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                      data = selResultsPermutations,
+                      weights = varExp(form = ~absInStrT_sqrt),
+                      random = ~1|net,
+                      method = "ML") 
+      
+      # get fitted coefficients from the model fit
+      betas_nullDistr_absInStrT_sqrt[permNum] <- summary(lmeModel)$tTable[2, 1]
+      betas_nullDistr_absOutStrT_sqrt[permNum] <- summary(lmeModel)$tTable[3, 1]
+      
+      # get p values from the model fit
+      pvals_nullDistr_absInStrT_sqrt[permNum] <- summary(lmeModel)$tTable[2, 5]
+      pvals_nullDistr_absOutStrT_sqrt[permNum] <- summary(lmeModel)$tTable[3, 5]
+    }, 
+    error = function(e) # In case of error
+    { 
+      # get fitted coefficients from the model fit
+      betas_nullDistr_absInStrT_sqrt[permNum] <- NA
+      betas_nullDistr_absOutStrT_sqrt[permNum] <- NA
+  
+      # get p values from the model fit
+      pvals_nullDistr_absInStrT_sqrt[permNum] <- NA
+      pvals_nullDistr_absOutStrT_sqrt[permNum] <- NA
+      
+      message(e$message)
+    },
+    warning = function(w) # In case of warning
+    { 
+            message(w$message)
+    },
+    finally = 
+    { # Specifying final message
+            #message(paste0("Permutation ", permNum, " finished."))
+    }
+  )
+}
+
+numNonconvergedFits <- sum(is.na(pvals_nullDistr_absInStrT_sqrt))
+print(paste0("Number of non-converged fits: ", numNonconvergedFits, ", out of: ", numPermutations))
+
+plot_lmePerm_In <- ggplot(data = data.frame(pvals = pvals_nullDistr_absInStrT_sqrt), aes(x = pvals)) +
+  geom_histogram(binwidth = 0.01) +
+  geom_vline(aes(xintercept = obs_pval_absInStrT_sqrt))
+plot_lmePerm_In
+plot_lmePerm_Out <- ggplot(data = data.frame(pvals = pvals_nullDistr_absOutStrT_sqrt), aes(x = pvals)) +
+  geom_histogram(binwidth = 0.01) +
+  geom_vline(aes(xintercept = obs_pval_absOutStrT_sqrt))
+plot_lmePerm_Out
+
+FDR_rate_absInStrT_sqrt <- length(which(pvals_nullDistr_absInStrT_sqrt < 0.05))/(numPermutations - numNonconvergedFits)
+print(paste0("FDR rate for instrength: ", FDR_rate_absInStrT_sqrt))
+FDR_rate_absOutStrT_sqrt <- length(which(pvals_nullDistr_absOutStrT_sqrt < 0.05))/(numPermutations - numNonconvergedFits)
+print(paste0("FDR rate for outstrength: ", FDR_rate_absOutStrT_sqrt))
+```
+
+# LME with downsized data
+
+```{r lme-independent-samples-per-net}
+selResults_perNet <- selResultsNoNA[, c("relDeltaVar_10000", "absInStrT_sqrt", "absOutStrT_sqrt", "net")]
+
+selResults_perNet <- selResults_perNet %>% 
+  group_by(net) %>% 
+  sample_n(1)
+
+lmModel <- lm(data = selResults_perNet,
+               formula = sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt)#, 
+#weights = varExp(form = ~absInStrT_sqrt),
+#method = "ML") 
+summary(lmModel)
+r.squaredGLMM(lmModel)
+print("VIF:")
+vif(lmModel)
+
+# get fitted coefficients from the model fit
+coef_explVar1 <- signif(summary(lmModel)$coefficients[2, 1], digits = 1)
+coef_explVar2 <- signif(summary(lmModel)$coefficients[3, 1], digits = 2)
+
+# get p values from the model fit
+pval_explVar1 <- signif(summary(lmModel)$coefficients[2, 4], digits = 2)
+pval_explVar2 <- signif(summary(lmModel)$coefficients[3, 4], digits = 2)
+
+# double check that the p values are zero before renaming them
+if(summary(lmModel)$coefficients[2, 4] < 2.2e-16){pval_coef1_title = "p < 2.2 x 10^{-16}"} else
+{pval_coef1_title = paste0("p = ", pval_explVar1)}
+if(summary(lmModel)$coefficients[3, 4] < 2.2e-16){pval_coef2_title = "p < 2.2 x 10^{-16}"} else 
+{pval_coef2_title = paste0("p = ", pval_explVar2)}
+
+if(pval_explVar1 == 2.9e-10){pval_coef1_title = "p = 2.9 x 10^{-10}"} 
+
+coef_pval_explVar1_title <- TeX(paste0("$\\beta$ = ", round(coef_explVar1, 3), "; ", pval_coef1_title))
+coef_pval_explVar2_title <- TeX(paste0("$\\beta$ = ", coef_explVar2, "; ", pval_coef2_title))
+
+# R2m for plotting
+partial_R2m_absInStr_num <- partial_eta_squared(lmModel)[1]
+partial_R2m_absOutStr_num <- partial_eta_squared(lmModel)[2]
+
+R2m_absInStr_text <- TeX(paste0("partial R^{2} = ", partial_R2m_absInStr_num))
+R2m_absOutStr_text <- TeX(paste0("partial R^{2} = ", partial_R2m_absOutStr_num))
+
+if(partial_R2m_absInStr_num == 0.00052){R2m_absInStr_text <- TeX(paste0("partial R^{2}_m = 5.2 x 10^{-4}"))} 
+
+plot_relDeltaVar_absInStr_sel <- ggplot(selResults, aes(x = absInStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  geom_abline(slope = lmModel$coefficients[2], 
+              intercept = lmModel$coefficients[1],
+              color = "black", linetype = "dashed", size = 1) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=12, face="bold"),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  labs(x = "Instrength (sqrt)", y = expression(bold("Rel."~Delta~"expr. variance (transf.)")), 
+       title = coef_pval_explVar1_title,
+       subtitle = R2m_absInStr_text) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  annotate('text', x = 0, y = 1.4, label = MI_obs_explVar1_title_with_pval, parse = TRUE, size = 4, hjust = 0) +
+  ylim(0, 1.5)
+plot_relDeltaVar_absOutStr_sel <- ggplot(selResults, aes(x = absOutStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  geom_abline(slope = lmModel$coefficients[3], 
+              intercept = lmModel$coefficients[1],
+              color = "black", linetype = "dashed", size = 1) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=12, face="bold"),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  labs(x = "Outstrength (sqrt)", y = expression(bold("Rel."~Delta~"expr. variance (transf.)")), 
+       title = coef_pval_explVar2_title,
+       subtitle = R2m_absOutStr_text) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  annotate('text', x = 0, y = 1.4, label = MI_obs_explVar2_title_with_pval, parse = TRUE, size = 4, hjust = 0) +
+  ylim(0, 1.5)
+```
+

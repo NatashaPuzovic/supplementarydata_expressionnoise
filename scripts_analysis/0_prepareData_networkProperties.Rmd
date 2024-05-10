@@ -1,0 +1,50 @@
+---
+title: "Prepare dataset with different network structures"
+author: "Natasha Puzovic (puzovic@evolbio.mpg.de)"
+date: "Nov 1, 2021"
+output:
+  html_document:
+    df_print: paged
+    number_sections: yes
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+# Read data
+Read the genotype, phenotype and fitness information of evolved populations of 3 different network topology types.
+
+```{r, setup, include=FALSE}
+resultsFolder1 = "20210609_ER_40node_0.05dens"
+resultsFolder2 = "20211201_BA_40node_0.05dens"
+resultsFolder3 = "20211201_WS_40node_0.05dens"
+jointResultsFolder = "20211201_40node_0.05dens_joint_topos"
+pathToJointResultsFolder = paste0("../results/", jointResultsFolder)
+
+if (!dir.exists(pathToJointResultsFolder)) {
+  dir.create(pathToJointResultsFolder)
+}
+```
+
+```{r read-results}
+# ER
+allNetsResults1 <- read.table(paste0("../results/", resultsFolder1, "/allNetsResults_prepped.txt"), sep = "\t", header = TRUE)
+# there are 2k nets in this dataset, we keep 1k to have a balanced sample with the other topos which have 1k nets
+allNetsResults1 <- allNetsResults1[allNetsResults1$net %in% 1:1000, ]
+
+#BA
+allNetsResults2 <- read.table(paste0("../results/", resultsFolder2, "/allNetsResults_prepped.txt"), sep = "\t", header = TRUE)
+
+# WS
+allNetsResults3 <- read.table(paste0("../results/", resultsFolder3, "/allNetsResults_prepped.txt"), sep = "\t", header = TRUE)
+
+# bind together
+allNetsResults_joint <- rbind(allNetsResults1, allNetsResults2, allNetsResults3)
+```
+
+```{r write out}
+# write joint results
+write.table(allNetsResults_joint,
+            file = paste0(pathToJointResultsFolder, "/allNetsResults_prepped_joint.txt"),
+            sep = "\t", row.names = FALSE)
+```

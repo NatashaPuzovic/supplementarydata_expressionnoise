@@ -1,0 +1,1827 @@
+---
+title: "Simulations results: different network topologies"
+author: "Natasha Puzovic (puzovic@evolbio.mpg.de)"
+date: "Nov 2, 2021"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    df_print: paged
+    number_sections: yes
+    toc: yes
+---
+
+# Read data
+Read the genotype, phenotype and fitness information of evolved populations of 3000 network topology samples.
+
+```{r read-data}
+jointResultsFolder = "20211201_40node_0.05dens_joint_topos"
+pathToJointResultsFolder = paste0("../results/", jointResultsFolder)
+
+# read results and split into sel & neutr
+allNetsResults_joint <- read.table(paste0(pathToJointResultsFolder, "/allNetsResults_prepped_joint.txt"), 
+                                   sep = "\t", header = TRUE)
+
+# rename nets
+allNetsResults_joint[allNetsResults_joint$topo == "BA", "net"] <- 
+  allNetsResults_joint[allNetsResults_joint$topo == "BA", "net"] + 1000
+allNetsResults_joint[allNetsResults_joint$topo == "WS", "net"] <- 
+  allNetsResults_joint[allNetsResults_joint$topo == "WS", "net"] + 2000
+
+allNetsResults_joint$topo <- factor(allNetsResults_joint$topo, levels = c("ER", "BA", "WS"))
+
+# remove genes of degree 1 because they make in and outlink metrics colinear
+# reason: when we generate networks we impose that the network must have a single component
+# i.e. all genes are connected. Many genes end up having just one connection, which can be either
+# an in or outlink. 
+allNetsResults_joint <- allNetsResults_joint[allNetsResults_joint$absInStr != 0, ] 
+allNetsResults_joint <- allNetsResults_joint[allNetsResults_joint$absOutStr != 0, ] 
+
+selResults <- allNetsResults_joint[allNetsResults_joint$scen == "sel", ]
+neutrResults <- allNetsResults_joint[allNetsResults_joint$scen == "neu", ]
+
+# subset responded genes
+respondedToSelCutoff <- 0.5
+
+# add which genes responded to selection
+selResults$responseToSel <- selResults$s_g_area_abs > respondedToSelCutoff
+
+# subset the genes that responded to selection
+respondedGenes <- selResults[selResults$responseToSel == TRUE, ]
+```
+
+## Load packages, functions & colors
+
+```{r load-packages}
+library(nlme)
+library(MuMIn) # for r.squared in lme models
+library(ggplot2)
+library(ggpubr) # for the pubclean theme
+library(ggridges)
+library(gridExtra)
+library(cowplot) # for arranging plots
+library(infotheo)
+library(lme4)
+library(car) # for vif measure
+library(RColorBrewer) # for color palettes
+library(latex2exp) # for latex notation in the plots
+library(reshape2)
+library("Hmisc") # for correlation matrix
+library(corrplot) # for plotting correlation matrix
+library(ade4) # for PCA
+library(factoextra) # for scree plot
+library(FSA) # for Dunn tests
+library(rstatix) # for partial eta for lms
+library(dplyr) # for summarizing dataframes
+
+# MI 
+calcInformation <- function (v1, v2, binNum) {
+  
+  # discretize 
+  d_v1 <- discretize(v1, nbins = binNum);
+  d_v2 <- discretize(v2, nbins = binNum)
+  
+  # mutual information
+  I_v1v2 <- mutinformation(d_v1, d_v2);
+
+  return("MI" = I_v1v2)
+}
+
+# colors for plots
+noiseColor = "#01665e"
+genotypeColor = "#7b3294"
+phenotypeColor = "#d95f0e"
+fitnessColor = "#e78ac3"
+neutralityColor = "darkgray"
+MIColor = "#2c7fb8"
+topoColors = c("ER" = "darkgray", "BA" = "#c51b7d", "WS" = "#4d9221")
+```
+
+```{r summarize-over-nets}
+netAllResults <- allNetsResults_joint %>%
+                  group_by(scen, net) %>%
+                  summarize(ave_varP_1 = mean(varP_1),
+                            ave_varP_10000 = mean(varP_10000),
+                            ave_relDeltaVar_10000 = mean(relDeltaVar_10000),
+                            ave_s_g_area_abs = mean(s_g_area_abs),
+                            topo = first(topo))
+netSelResults <- selResults %>%
+                  group_by(scen, net) %>%
+                  summarize(ave_varP_1 = mean(varP_1),
+                            ave_varP_10000 = mean(varP_10000),
+                            ave_relDeltaVar_10000 = mean(relDeltaVar_10000),
+                            ave_s_g_area_abs = mean(s_g_area_abs), 
+                            ave_responseToSel = length(which(responseToSel)),
+                            topo = first(topo))
+
+evolMetricsColnames <- c("meanG_1", "meanG_10000",
+                         "meanP_1", "meanP_10000", 
+                         "varP_1", "varP_10000", 
+                         "CVP_1", "CVP_10000",
+                         "noiseP_1", "noiseP_10000", 
+                         "FanoP_1", "FanoP_10000",
+                         "relDeltaVar_1", "relDeltaVar_10000",
+                         "relDeltaCV_1", "relDeltaCV_10000",
+                         "relDeltaNoise_1", "relDeltaNoise_10000",
+                         "relDeltaFano_1", "relDeltaFano_10000",
+                         "s_g_area", "s_g_area_abs", 
+                         "s_p_area_relDeltaVar", "s_p_area_relDeltaCV", 
+                         "s_p_area_relDeltaNoise", "s_p_area_relDeltaFano")
+evolMetricsColnames_ofInterest <- c("varP_1", "relDeltaVar_10000", "s_g_area_abs")
+geneSpecificNetMetricsColnames <- c("k_all_inclps", "k_in_inclps", "k_out_inclps", 
+                                    "clo_all", "betw", "eigen_centr", 
+                                    "str_all_inclps", "str_in_inclps", "str_out_inclps",
+                                    "hub_score", "auth_incwght", "auth_excwght",
+                                    "absstr_all_inclps", "absInStr", "absOutStr",
+                                    "flow", "load", "info", "stress", 
+                                    "absInStrT_sqrt", "absOutStrT_sqrt", 
+                                    "absInStrT_log1p", "absOutStrT_log1p", 
+                                    "absInStrT_log10", "absOutStrT_log10")
+geneSpecificNetMetricsColnames_ofInterest <- c("k_all_inclps", "k_in_inclps", "k_out_inclps", 
+                                              "clo_all", "betw", "eigen_centr", 
+                                              "str_all_inclps", "str_in_inclps", "str_out_inclps",
+                                              "hub_score", "auth_incwght", "auth_excwght",
+                                              "absstr_all_inclps", "absInStr", "absOutStr",
+                                              "flow", "load", "info", "stress")
+
+globalNetMetricsColnames <- c("diam", "meandst", "assort", 
+                              "cntr_degr_all", "cntr_indegr", "cntr_outdegr", "cntr_clo_all", "cntr_betw",
+                              "ave_k_all_inclps", "ave_k_in_inclps","ave_k_out_inclps")
+
+
+singletsSelResults <- selResults[!duplicated(selResults$net), c("net", globalNetMetricsColnames)]
+netSelResults <- merge(netSelResults, singletsSelResults, by = "net")
+singletsAllResults <- allNetsResults_joint[!duplicated(allNetsResults_joint$net), c("net", globalNetMetricsColnames)]
+netAllResults <- merge(netAllResults, singletsAllResults, by = "net")
+```
+
+```{r, setup, include=FALSE}
+pathToPlotsFolder = "../plots/mainResults_networkProperties_filtered_2"
+if (!dir.exists(pathToPlotsFolder)) {
+  dir.create(pathToPlotsFolder)
+}
+```
+
+# Topological effects on distributions of noise metrics
+
+## Preview
+
+```{r preview}
+# wrap around scenario
+ggplot(data = allNetsResults_joint, aes(y = varP_1, x = topo)) +
+  geom_boxplot(width = 0.2, alpha = 0.8, outlier.alpha = 0, fill = noiseColor) +
+  facet_wrap(~scen) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  scale_fill_manual(values = c("sel" = noiseColor, "neutr" = noiseColor)) +
+    labs(x = "Network topology",
+       y = expression(bold("Expr. variance, gen 1"))) 
+
+# wrap around scenario
+ggplot(data = allNetsResults_joint, aes(y = varP_10000, x = topo)) +
+  geom_boxplot(width = 0.2, alpha = 0.8, outlier.alpha = 0, fill = noiseColor) +
+  facet_wrap(~scen) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  scale_fill_manual(values = c("sel" = noiseColor, "neutr" = noiseColor)) +
+  ylab(expression(bold("Expr. variance, gen 10k"))) +
+  xlab("Network topology")
+
+# wrap around scenario
+ggplot(data = allNetsResults_joint, aes(y = relDeltaVar_10000, x = topo)) +
+  geom_boxplot(width = 0.2, alpha = 0.8, outlier.alpha = 0, fill = noiseColor) +
+  facet_wrap(~scen) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  scale_fill_manual(values = c("sel" = noiseColor, "neutr" = noiseColor)) +
+  ylab(expression(bold("Rel."~Delta~"expr. variance"))) +
+  xlab("Network topology")
+
+# wrap around scenario
+ggplot(data = allNetsResults_joint, aes(y = s_g_area_abs, x = topo)) +
+  geom_boxplot(width = 0.2, alpha = 0.8, outlier.alpha = 0, fill = genotypeColor) +
+  facet_wrap(~scen) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  scale_fill_manual(values = c("sel" = genotypeColor, "neutr" = genotypeColor)) +
+  ylab(expression(paste(bold("Selective pressure "), "|", bold(p), "|"))) +
+  xlab("Network topology")
+```
+
+```{r just-selection}
+my_comparisons <- list( c("ER", "BA"), c("BA", "WS"), c("WS", "ER") )
+
+# just selection
+plot_varFirstgen_sel <- ggplot(selResults, aes(y = varP_1, x = topo)) +
+  geom_violin(aes(fill = topo), trim = TRUE) +
+  geom_boxplot(width = 0.05, alpha = 1, outlier.alpha = 0, fill = "white") +
+               stat_compare_means(comparisons = my_comparisons, label = "p.signif", method = "wilcox.test") +
+  stat_summary(fun = mean, geom = "text", show.legend = FALSE, size = 5,
+               hjust = 1.25, vjust = -2, color = "black", aes(label=round(..y.., digits=2))) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  scale_fill_manual(values = topoColors) +
+  labs(x = "Network topology",
+       y = "Expr. variance, gen 1",
+       fill = "Topology")
+plot_varFirstgen_sel
+ggsave(filename = sprintf("plot_varFirstgen_sel.png"),
+       plot = plot_varFirstgen_sel, 
+       path = pathToPlotsFolder,
+       device = "png", scale = 2, width = 6, height = 5.5, units = "cm",
+       dpi = 300, limitsize = TRUE)
+
+# just selection
+plot_varLastgen_sel <- ggplot(selResults, aes(y = varP_10000, x = topo)) +
+  geom_violin(aes(fill = topo), trim = TRUE) +
+  geom_boxplot(width = 0.05, alpha = 1, outlier.alpha = 0, fill = "white") +
+               stat_compare_means(comparisons = my_comparisons, label = "p.signif", method = "wilcox.test") +
+  stat_summary(fun = mean, geom = "text", show.legend = FALSE, size = 5,
+               hjust = 1.25, vjust = -2, color = "black", aes(label=round(..y.., digits=2))) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  scale_fill_manual(values = topoColors) +
+  labs(x = "Network topology",
+       y = "Expr. variance, gen 10k",
+       fill = "Topology")
+plot_varLastgen_sel
+ggsave(filename = sprintf("plot_varLastgen_sel.png"),
+       plot = plot_varLastgen_sel, 
+       path = pathToPlotsFolder,
+       device = "png", scale = 2, width = 6, height = 5.5, units = "cm",
+       dpi = 300, limitsize = TRUE)
+
+# just selection
+plot_relDeltaVar_sel <- ggplot(selResults, aes(y = relDeltaVar_10000, x = topo)) +
+  geom_violin(aes(fill = topo), trim = TRUE) +
+  geom_boxplot(width = 0.1, alpha = 1, outlier.alpha = 0, fill = "white") +
+  stat_summary(fun = mean, geom = "text", show.legend = FALSE, size = 5,
+               hjust = 1.25, vjust = -2, color = "black", aes(label = round(..y.., digits = 3))) +
+  stat_compare_means(comparisons = my_comparisons, label = "p.signif", method = "wilcox.test") +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  scale_fill_manual(values = topoColors) +
+  labs(x = "Network topology",
+       y = expression(bold("Rel."~Delta~"expr. variance")),
+       fill = "Topology")
+plot_relDeltaVar_sel
+ggsave(filename = sprintf("plot_relDeltaVar_sel.png"),
+       plot = plot_relDeltaVar_sel, 
+       path = pathToPlotsFolder,
+       device = "png", scale = 2, width = 6, height = 5.5, units = "cm",
+       dpi = 300, limitsize = TRUE)
+
+# just selection
+plot_selpress_sel <- ggplot(selResults, aes(y = s_g_area_abs, x = topo)) +
+  geom_violin(aes(fill = topo), trim = TRUE) +
+  geom_boxplot(width = 0.1, alpha = 1, outlier.alpha = 0, fill = "white") +
+  stat_summary(fun = mean, geom = "text", show.legend = FALSE, size = 5,
+               hjust = 1.25, vjust = 3, color = "black", aes(label = round(..y.., digits = 3))) +
+  stat_compare_means(comparisons = my_comparisons, label = "p.signif", method = "wilcox.test") +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  scale_fill_manual(values = topoColors) +
+  labs(x = "Network topology",
+       y = expression(paste(bold("Selective pressure "), "|", bold(p), "|")),
+       fill = "Topology")
+plot_selpress_sel
+ggsave(filename = sprintf("plot_selpress_sel.png"),
+       plot = plot_selpress_sel,
+       path = pathToPlotsFolder,
+       device = "png", scale = 2, width = 6, height = 5.5, units = "cm",
+       dpi = 300, limitsize = TRUE)
+
+plot_violin_metrics_per_topo <- plot_grid(plot_varFirstgen_sel,
+                        plot_varLastgen_sel,
+                        plot_relDeltaVar_sel,
+                        plot_selpress_sel,
+                        scale = c(0.95, 0.95, 0.95, 0.95),
+                        labels = "AUTO",
+                        label_size = 20,
+                        label_fontface = "bold")
+ggsave(filename = sprintf("plot_violin_metrics_per_topo.png"),
+       plot = plot_violin_metrics_per_topo, 
+       bg = "white",
+       path = pathToPlotsFolder,
+       device = "png", scale = 1.8, width = 17, height = 12, units = "cm",
+       dpi = 300, limitsize = TRUE)
+ggsave(filename = sprintf("plot_violin_metrics_per_topo.tiff"),
+       plot = plot_violin_metrics_per_topo, 
+       bg = "white",
+       path = pathToPlotsFolder,
+       device = "tiff", scale = 1.8, width = 17, height = 12, units = "cm",
+       dpi = 300, limitsize = TRUE)
+
+```
+
+## Comparisons
+
+```{r summary-varFirstgen}
+summary(selResults$varP_1[selResults$topo == "BA"])
+summary(selResults$varP_1[selResults$topo == "ER"])
+summary(selResults$varP_1[selResults$topo == "WS"])
+```
+
+```{r summary-varLastgen}
+summary(selResults$varP_10000[selResults$topo == "BA"])
+summary(selResults$varP_10000[selResults$topo == "ER"])
+summary(selResults$varP_10000[selResults$topo == "WS"])
+```
+
+```{r summary-relDeltaVar}
+summary(selResults$relDeltaVar_10000[selResults$topo == "BA"])
+summary(selResults$relDeltaVar_10000[selResults$topo == "ER"])
+summary(selResults$relDeltaVar_10000[selResults$topo == "WS"])
+```
+
+```{r summary-s_g_area_abs}
+summary(selResults$s_g_area_abs[selResults$topo == "BA"])
+summary(selResults$s_g_area_abs[selResults$topo == "ER"])
+summary(selResults$s_g_area_abs[selResults$topo == "WS"])
+```
+
+```{r kruskal-tests}
+kruskal.test(varP_1 ~ topo, data = selResults)
+kruskal.test(varP_10000 ~ topo, data = selResults)
+kruskal.test(relDeltaVar_10000 ~ topo, data = selResults)
+kruskal.test(s_g_area_abs ~ topo, data = selResults)
+```
+
+
+```{r pairwise-wilcox}
+pairwise.wilcox.test(selResults$varP_1, selResults$topo, paired = FALSE, p.adjust.method = "BH")
+pairwise.wilcox.test(selResults$varP_10000, selResults$topo, paired = FALSE, p.adjust.method = "BH")
+pairwise.wilcox.test(selResults$relDeltaVar_10000, selResults$topo, paired = FALSE, p.adjust.method = "BH")
+pairwise.wilcox.test(selResults$s_g_area_abs, selResults$topo, paired = FALSE, p.adjust.method = "BH")
+```
+```{r wilcox-tailed-varP_1}
+# ER to BA
+wilcox.test(selResults$varP_1[selResults$topo == "ER"], selResults$varP_1[selResults$topo == "BA"],
+            alternative = "less")
+wilcox.test(selResults$varP_1[selResults$topo == "ER"], selResults$varP_1[selResults$topo == "BA"],
+            alternative = "greater")
+
+# BA to WS
+wilcox.test(selResults$varP_1[selResults$topo == "BA"], selResults$varP_1[selResults$topo == "WS"],
+            alternative = "less")
+wilcox.test(selResults$varP_1[selResults$topo == "BA"], selResults$varP_1[selResults$topo == "WS"],
+            alternative = "greater")
+
+# WS to ER
+wilcox.test(selResults$varP_1[selResults$topo == "WS"], selResults$varP_1[selResults$topo == "ER"],
+            alternative = "less")
+wilcox.test(selResults$varP_1[selResults$topo == "WS"], selResults$varP_1[selResults$topo == "ER"],
+            alternative = "greater")
+```
+
+```{r wilcox-tailed-varP_10000}
+# ER to BA
+wilcox.test(selResults$varP_10000[selResults$topo == "ER"], selResults$varP_10000[selResults$topo == "BA"],
+            alternative = "less")
+wilcox.test(selResults$varP_10000[selResults$topo == "ER"], selResults$varP_10000[selResults$topo == "BA"],
+            alternative = "greater")
+
+# BA to WS
+wilcox.test(selResults$varP_10000[selResults$topo == "BA"], selResults$varP_10000[selResults$topo == "WS"],
+            alternative = "less")
+wilcox.test(selResults$varP_10000[selResults$topo == "BA"], selResults$varP_10000[selResults$topo == "WS"],
+            alternative = "greater")
+
+# WS to ER
+wilcox.test(selResults$varP_10000[selResults$topo == "WS"], selResults$varP_10000[selResults$topo == "ER"],
+            alternative = "less")
+wilcox.test(selResults$varP_10000[selResults$topo == "WS"], selResults$varP_10000[selResults$topo == "ER"],
+            alternative = "greater")
+```
+
+```{r wilcox-tailed-relDeltaVar_10000}
+# ER to BA
+wilcox.test(selResults$relDeltaVar_10000[selResults$topo == "ER"], selResults$relDeltaVar_10000[selResults$topo == "BA"],
+            alternative = "less")
+wilcox.test(selResults$relDeltaVar_10000[selResults$topo == "ER"], selResults$relDeltaVar_10000[selResults$topo == "BA"],
+            alternative = "greater")
+
+# BA to WS
+wilcox.test(selResults$relDeltaVar_10000[selResults$topo == "BA"], selResults$relDeltaVar_10000[selResults$topo == "WS"],
+            alternative = "less")
+wilcox.test(selResults$relDeltaVar_10000[selResults$topo == "BA"], selResults$relDeltaVar_10000[selResults$topo == "WS"],
+            alternative = "greater")
+
+# WS to ER
+wilcox.test(selResults$relDeltaVar_10000[selResults$topo == "WS"], selResults$relDeltaVar_10000[selResults$topo == "ER"],
+            alternative = "less")
+wilcox.test(selResults$relDeltaVar_10000[selResults$topo == "WS"], selResults$relDeltaVar_10000[selResults$topo == "ER"],
+            alternative = "greater")
+```
+```{r wilcox-tailed-selpress}
+# ER to BA
+wilcox.test(selResults$s_g_area_abs[selResults$topo == "ER"], selResults$s_g_area_abs[selResults$topo == "BA"],
+            alternative = "less")
+wilcox.test(selResults$s_g_area_abs[selResults$topo == "ER"], selResults$s_g_area_abs[selResults$topo == "BA"],
+            alternative = "greater")
+
+# BA to WS
+wilcox.test(selResults$s_g_area_abs[selResults$topo == "BA"], selResults$s_g_area_abs[selResults$topo == "WS"],
+            alternative = "less")
+wilcox.test(selResults$s_g_area_abs[selResults$topo == "BA"], selResults$s_g_area_abs[selResults$topo == "WS"],
+            alternative = "greater")
+
+# WS to ER
+wilcox.test(selResults$s_g_area_abs[selResults$topo == "WS"], selResults$s_g_area_abs[selResults$topo == "ER"],
+            alternative = "less")
+wilcox.test(selResults$s_g_area_abs[selResults$topo == "WS"], selResults$s_g_area_abs[selResults$topo == "ER"],
+            alternative = "greater")
+```
+
+```{r dunn-tests}
+dunnTest(varP_1 ~ topo, data = selResults, method = "bh")
+dunnTest(varP_10000 ~ topo, data = selResults, method = "bh")
+dunnTest(relDeltaVar_10000 ~ topo, data = selResults, method = "bh")
+dunnTest(s_g_area_abs ~ topo, data = selResults, method = "bh")
+```
+
+
+```{r lm-varP_1}
+lmeModel <- lm(ave_varP_1 ~ topo, 
+               data = netSelResults)
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+```
+
+```{r lm-ave_varP_10000}
+lmeModel <- lm(ave_varP_10000 ~ topo, 
+               data = netSelResults)
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+```
+
+```{r lm-ave_relDeltaVar_10000}
+lmeModel <- lm(ave_relDeltaVar_10000 ~ topo, 
+              data = netSelResults[!is.na(netSelResults$ave_relDeltaVar_10000), ])
+
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+```
+
+```{r lm-ave_s_g_area_abs}
+lmeModel <- lm(ave_s_g_area_abs ~ topo,
+               data = netSelResults)
+
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+```
+
+# Topological effects on local network metrics
+
+## Logistic regression
+
+```{r logReg-global-netmetrics-PCs-ave_responseToSel}
+logRegModel <- glmer(responseToSel ~ (absInStrT_sqrt + absOutStrT_sqrt)*topo + (1|net), 
+                   data = selResults,
+                   family = binomial,
+                   control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+summary(logRegModel)
+```
+
+## Local network metrics
+
+```{r lme-varP_1}
+lmeModel <- lme(varP_1 ~ (absInStrT_sqrt + absOutStrT_sqrt)*topo, 
+                data = selResults,
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net,
+                method = "ML") 
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+```
+
+```{r lme-relDeltaVar-interactions}
+lmeModel <- lme(relDeltaVar_10000 ~ (absInStrT_sqrt + absOutStrT_sqrt)*topo, 
+                data = respondedGenes,
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net,
+                method = "ML") 
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+```
+
+```{r lme-s_g_area_abs-interactions}
+lmeModel <- lme(s_g_area_abs ~ (absInStrT_sqrt + absOutStrT_sqrt)*topo, 
+                data = respondedGenes,
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net,
+                method = "ML") 
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+```
+
+
+```{r lme-s_g_area_abs}
+lmeModel <- lme(s_g_area_abs ~ absInStrT_sqrt + absOutStrT_sqrt + topo, 
+                data = respondedGenes,
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net,
+                method = "ML") 
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+```
+
+# Correlograms
+
+```{r subsets-for-correlations}
+# subset
+ave_evolMetricsColnames_ofInterest <- c("ave_varP_1", "ave_relDeltaVar_10000", "ave_s_g_area_abs")
+
+# There are also "num_generations", "num_nodes", "dens", "pop_size" columns, but they are identical for all topos.
+
+# global net metrics
+globalMetrics_forCorrs_sel <- netSelResults[, c(ave_evolMetricsColnames_ofInterest, globalNetMetricsColnames)]
+globalMetrics_forCorrs_neu <- netSelResults[, c(ave_evolMetricsColnames_ofInterest, globalNetMetricsColnames)]
+
+# gene-specific metrics
+geneMetrics_forCorrs_sel <- selResults[, c(evolMetricsColnames_ofInterest, geneSpecificNetMetricsColnames_ofInterest)]
+geneMetrics_forCorrs_neu <- neutrResults[, c(evolMetricsColnames_ofInterest, geneSpecificNetMetricsColnames_ofInterest)]
+```
+
+## Gene-specific metrics
+
+```{r calc-correlations-gene-specific}
+# selection
+geneSpecificCorrs_sel <- rcorr(as.matrix(geneMetrics_forCorrs_sel), type = "spearman")
+
+# neutrality
+geneSpecificCorrs_neu <- rcorr(as.matrix(geneMetrics_forCorrs_neu), type = "spearman")
+```
+
+```{r save-correlograms-gene-specific}
+png(filename = paste0(pathToPlotsFolder, "/correlations_geneMetrics_sel.png"),
+    width = 25, height = 25, units = 'cm', res = 300)
+corrplot(geneSpecificCorrs_sel$r, type = "upper", method = "color", diag = FALSE, addCoef.col = "black",
+         number.cex = 0.7,
+         p.mat = geneSpecificCorrs_sel$P, sig.level = 0.05, insig = "blank",
+         tl.col = "black", na.label = "NA", tl.srt = 45, col = brewer.pal(n = 8, name = "RdBu"),  outline = TRUE, mar=c(0,0,1,0))
+dev.off()
+tiff(filename = paste0(pathToPlotsFolder, "/correlations_geneMetrics_sel.tiff"),
+    width = 25, height = 25, units = 'cm', res = 300)
+corrplot(geneSpecificCorrs_sel$r, type = "upper", method = "color", diag = FALSE, addCoef.col = "black",
+         number.cex = 0.7,
+         p.mat = geneSpecificCorrs_sel$P, sig.level = 0.05, insig = "blank",
+         tl.col = "black", na.label = "NA", tl.srt = 45, col = brewer.pal(n = 8, name = "RdBu"),  outline = TRUE, mar=c(0,0,1,0))
+dev.off()
+
+png(filename = paste0(pathToPlotsFolder, "/correlations_geneMetrics_neu.png"),
+    width = 25, height = 25, units = 'cm', res = 300)
+corrplot(geneSpecificCorrs_neu$r, type = "upper", method = "color", diag = FALSE, addCoef.col = "black",
+         number.cex = 0.7,
+         p.mat = geneSpecificCorrs_neu$P, sig.level = 0.05, insig = "blank",
+         tl.col = "black", na.label = "NA", tl.srt = 45, col = brewer.pal(n = 8, name = "RdBu"),  outline = TRUE, mar=c(0,0,1,0))
+dev.off()
+tiff(filename = paste0(pathToPlotsFolder, "/correlations_geneMetrics_neu.tiff"),
+    width = 25, height = 25, units = 'cm', res = 300)
+corrplot(geneSpecificCorrs_neu$r, type = "upper", method = "color", diag = FALSE, addCoef.col = "black",
+         number.cex = 0.7,
+         p.mat = geneSpecificCorrs_neu$P, sig.level = 0.05, insig = "blank",
+         tl.col = "black", na.label = "NA", tl.srt = 45, col = brewer.pal(n = 8, name = "RdBu"),  outline = TRUE, mar=c(0,0,1,0))
+dev.off()
+```
+
+
+## Global network metrics
+
+```{r calc-correlations-global-metrics}
+# selection
+globalCorrs_sel <- rcorr(as.matrix(globalMetrics_forCorrs_sel), type = "spearman")
+
+# neutrality
+globalCorrs_neu <- rcorr(as.matrix(globalMetrics_forCorrs_neu), type = "spearman")
+```
+
+```{r save-correlograms-global-metrics}
+png(filename = paste0(pathToPlotsFolder, "/correlations_globalMetrics_sel.png"),
+    width = 20, height = 20, units = 'cm', res = 300)
+corrplot(globalCorrs_sel$r, type = "upper", method = "color", diag = FALSE, addCoef.col = "black",
+         number.cex = 0.8,
+         p.mat = globalCorrs_sel$P, sig.level = 0.05, insig = "blank",
+         tl.col = "black", na.label = "NA", tl.srt = 45, col = brewer.pal(n = 8, name = "RdBu"),  outline = TRUE, mar=c(0,0,1,0))
+dev.off()
+tiff(filename = paste0(pathToPlotsFolder, "/correlations_globalMetrics_sel.tiff"),
+    width = 20, height = 20, units = 'cm', res = 300)
+corrplot(globalCorrs_sel$r, type = "upper", method = "color", diag = FALSE, addCoef.col = "black",
+         number.cex = 0.8,
+         p.mat = globalCorrs_sel$P, sig.level = 0.05, insig = "blank",
+         tl.col = "black", na.label = "NA", tl.srt = 45, col = brewer.pal(n = 8, name = "RdBu"),  outline = TRUE, mar=c(0,0,1,0))
+dev.off()
+
+png(filename = paste0(pathToPlotsFolder, "/correlations_globalMetrics_neu.png"),
+    width = 20, height = 20, units = 'cm', res = 300)
+corrplot(globalCorrs_neu$r, type = "upper", method = "color", diag = FALSE, addCoef.col = "black",
+         number.cex = 0.8,
+         p.mat = globalCorrs_neu$P, sig.level = 0.05, insig = "blank",
+         tl.col = "black", na.label = "NA", tl.srt = 45, col = brewer.pal(n = 8, name = "RdBu"),  outline = TRUE, mar=c(0,0,1,0))
+dev.off()
+tiff(filename = paste0(pathToPlotsFolder, "/correlations_globalMetrics_neu.tiff"),
+    width = 20, height = 20, units = 'cm', res = 300)
+corrplot(globalCorrs_neu$r, type = "upper", method = "color", diag = FALSE, addCoef.col = "black",
+         number.cex = 0.8,
+         p.mat = globalCorrs_neu$P, sig.level = 0.05, insig = "blank",
+         tl.col = "black", na.label = "NA", tl.srt = 45, col = brewer.pal(n = 8, name = "RdBu"),  outline = TRUE, mar=c(0,0,1,0))
+dev.off()
+```
+
+# PCA of global network metrics
+
+```{r pca}
+globalMetrics_forPCA <- netAllResults[, globalNetMetricsColnames]
+colnames(globalMetrics_forPCA) <- c("diameter", "mean path distance", "degree assortativity", "degree centralization",
+                                         "indegree centralization", "outdegree centralization", "closeness centralization", 
+                                         "betweenness centralization", "average degree", "average indegree", "average outdegree")
+
+dudi <- dudi.pca(globalMetrics_forPCA, center = TRUE, scale = TRUE, nf = 10, scannf = FALSE)
+
+plot_biplot <- fviz_pca_biplot(dudi, 
+                               geom.ind = "point",
+                               col.ind = netAllResults$topo,
+                               col.var = "black",
+                               repel = TRUE,
+                               addEllipses = TRUE,
+                               legend.title = "Topology") +
+                               scale_colour_manual(values = topoColors)
+plot_biplot
+plot_scree <- fviz_eig(dudi, addlabels = TRUE)
+plot_corCircle <- fviz_pca_var(dudi, col.var = "contrib", labelsize = 4, repel = TRUE) + 
+                                scale_color_gradient2(low = "white", mid = "blue", high = "black") 
+
+plot_PCA <- plot_grid(plot_scree, plot_corCircle, 
+                               scale = c(0.95, 0.95),
+                               labels = "AUTO",
+                               label_size = 20,
+                               label_fontface = "bold",
+                               ncol = 2)
+
+ggsave(filename = sprintf("plot_PCA.png"),
+       plot = plot_PCA,
+       path = pathToPlotsFolder, bg = 'white',
+       device = "png", scale = 2, width = 18, height = 9, units = "cm",
+       dpi = 300, limitsize = TRUE)
+ggsave(filename = sprintf("plot_PCA.tiff"),
+       plot = plot_PCA,
+       path = pathToPlotsFolder, bg = 'white',
+       device = "tiff", scale = 2, width = 18, height = 9, units = "cm",
+       dpi = 300, limitsize = TRUE)
+
+netAllResults$PC1<- -dudi$li$Axis1
+netAllResults$PC2<- -dudi$li$Axis2
+
+ave_responseToSel <- netSelResults$ave_responseToSel
+netSelResults <- netAllResults[netAllResults$scen == "sel", ]
+netSelResults$ave_responseToSel <- ave_responseToSel
+netNeuResults <- netAllResults[netAllResults$scen == "neu", ]
+```
+
+```{r plot-PCs-per-topology-type}
+# just selection
+plot_PC1_topos <- ggplot(netSelResults, aes(y = PC1, x = topo)) +
+  geom_violin(fill = noiseColor, color = "black", trim = TRUE) +
+  geom_boxplot(width = 0.1, alpha = 1, outlier.alpha = 0, fill = "white") +
+  stat_summary(fun = mean, geom = "text", show.legend = FALSE, size = 5,
+               hjust = 1.25, vjust = -2, color = "black", aes(label = round(..y.., digits = 3))) +
+  stat_compare_means(comparisons = my_comparisons, label = "p.signif") +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  scale_fill_manual(values = c("sel" = noiseColor, "neutr" = noiseColor)) +
+  labs(x = "Network topology",
+       y = expression(bold("PC1 (diameter + centralization)")))
+plot_PC1_topos
+plot_PC2_topos <- ggplot(netSelResults, aes(y = PC2, x = topo)) +
+  geom_violin(fill = noiseColor, color = "black", trim = TRUE) +
+  geom_boxplot(width = 0.1, alpha = 1, outlier.alpha = 0, fill = "white") +
+  stat_summary(fun = mean, geom = "text", show.legend = FALSE, size = 5,
+               hjust = 1.25, vjust = -2, color = "black", aes(label = round(..y.., digits = 3))) +
+  stat_compare_means(comparisons = my_comparisons, label = "p.signif") +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  scale_fill_manual(values = c("sel" = noiseColor, "neutr" = noiseColor)) +
+  labs(x = "Network topology",
+       y = expression(bold("PC2 (average degree)")))
+plot_PC2_topos
+```
+
+```{r random-net-metrics}
+plot_netMetric <- ggplot(netSelResults, aes(y = diam, x = topo)) +
+  geom_violin(fill = noiseColor, color = "black", trim = TRUE) +
+  geom_boxplot(width = 0.1, alpha = 1, outlier.alpha = 0, fill = "white") +
+  stat_summary(fun = mean, geom = "text", show.legend = FALSE, size = 5,
+               hjust = 1.25, vjust = -2, color = "black", aes(label = round(..y.., digits = 3))) +
+  stat_compare_means(comparisons = my_comparisons, label = "p.signif") +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  scale_fill_manual(values = c("sel" = noiseColor, "neutr" = noiseColor)) +
+  labs(x = "Network topology",
+       y = expression(bold("Diameter")))
+plot_netMetric
+plot_netMetric <- ggplot(netSelResults, aes(y = cntr_indegr, x = topo)) +
+  geom_violin(fill = noiseColor, color = "black", trim = TRUE) +
+  geom_boxplot(width = 0.1, alpha = 1, outlier.alpha = 0, fill = "white") +
+  stat_summary(fun = mean, geom = "text", show.legend = FALSE, size = 5,
+               hjust = 1.25, vjust = -2, color = "black", aes(label = round(..y.., digits = 3))) +
+  stat_compare_means(comparisons = my_comparisons, label = "p.signif") +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  scale_fill_manual(values = c("sel" = noiseColor, "neutr" = noiseColor)) +
+  labs(x = "Network topology",
+       y = expression(bold("Indegree centralization")))
+plot_netMetric
+plot_netMetric <- ggplot(netSelResults, aes(y = cntr_outdegr, x = topo)) +
+  geom_violin(fill = noiseColor, color = "black", trim = TRUE) +
+  geom_boxplot(width = 0.1, alpha = 1, outlier.alpha = 0, fill = "white") +
+  stat_summary(fun = mean, geom = "text", show.legend = FALSE, size = 5,
+               hjust = 1.25, vjust = -2, color = "black", aes(label = round(..y.., digits = 3))) +
+  stat_compare_means(comparisons = my_comparisons, label = "p.signif") +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  scale_fill_manual(values = c("sel" = noiseColor, "neutr" = noiseColor)) +
+  labs(x = "Network topology",
+       y = expression(bold("Outdegree centralization")))
+plot_netMetric
+plot_netMetric <- ggplot(netSelResults, aes(y = ave_k_all_inclps, x = topo)) +
+  geom_violin(fill = noiseColor, color = "black", trim = TRUE) +
+  geom_boxplot(width = 0.1, alpha = 1, outlier.alpha = 0, fill = "white") +
+  stat_summary(fun = mean, geom = "text", show.legend = FALSE, size = 5,
+               hjust = 1.25, vjust = -2, color = "black", aes(label = round(..y.., digits = 3))) +
+  stat_compare_means(comparisons = my_comparisons, label = "p.signif") +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  scale_fill_manual(values = c("sel" = noiseColor, "neutr" = noiseColor)) +
+  labs(x = "Network topology",
+       y = expression(bold("Average degree")))
+plot_netMetric
+plot_netMetric <- ggplot(netSelResults, aes(y = ave_k_in_inclps, x = topo)) +
+  geom_violin(fill = noiseColor, color = "black", trim = TRUE) +
+  geom_boxplot(width = 0.1, alpha = 1, outlier.alpha = 0, fill = "white") +
+  stat_summary(fun = mean, geom = "text", show.legend = FALSE, size = 5,
+               hjust = 1.25, vjust = -2, color = "black", aes(label = round(..y.., digits = 3))) +
+  stat_compare_means(comparisons = my_comparisons, label = "p.signif") +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  scale_fill_manual(values = c("sel" = noiseColor, "neutr" = noiseColor)) +
+  labs(x = "Network topology",
+       y = expression(bold("Average indegree")))
+plot_netMetric
+plot_netMetric <- ggplot(netSelResults, aes(y = ave_k_out_inclps, x = topo)) +
+  geom_violin(fill = noiseColor, color = "black", trim = TRUE) +
+  geom_boxplot(width = 0.1, alpha = 1, outlier.alpha = 0, fill = "white") +
+  stat_summary(fun = mean, geom = "text", show.legend = FALSE, size = 5,
+               hjust = 1.25, vjust = -2, color = "black", aes(label = round(..y.., digits = 3))) +
+  stat_compare_means(comparisons = my_comparisons, label = "p.signif") +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  scale_fill_manual(values = c("sel" = noiseColor, "neutr" = noiseColor)) +
+  labs(x = "Network topology",
+       y = expression(bold("Average outdegree")))
+plot_netMetric
+```
+
+# LMs with PCs
+## Number of responded genes
+
+```{r lm-global-netmetrics-PCs-ave_responseToSel}
+lmModel <- lm(ave_responseToSel ~ PC1 + PC2, 
+                   data = netSelResults)
+summary(lmModel)
+
+plot_PC1 <- ggplot(netSelResults, aes(y = ave_responseToSel, x = PC1)) +
+  geom_point(aes(shape = topo, color = topo), alpha = 0.3, size = 2)+
+  geom_abline(slope = lmModel$coefficients[2], 
+              intercept = lmModel$coefficients[1],
+              color = "black", linetype = "dashed", size = 1) +
+  theme_bw() + 
+  theme(plot.title = element_text(size=12, face="bold",),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  scale_colour_manual(values = topoColors) +
+  labs(x = expression(bold("PC1 (diameter + centralization)")),
+       y = expression(paste(bold("Average # responded genes"))))
+plot_PC1
+
+plot_PC2 <- ggplot(netSelResults, aes(y = ave_responseToSel, x = PC2)) +
+  geom_point(aes(shape = topo, color = topo), alpha = 0.3, size = 2)+
+  geom_abline(slope = lmModel$coefficients[3], 
+              intercept = lmModel$coefficients[1],
+              color = "black", linetype = "dashed", size = 1) +
+  theme_bw() + 
+  theme(plot.title = element_text(size=12, face="bold",),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  scale_colour_manual(values = topoColors) +
+  labs(x = expression(bold("PC2 (average degree)")),
+       y = expression(paste(bold("Average # responded genes"))))
+plot_PC2
+```
+
+```{r num-responded-genes-proportion-test}
+# just selection
+numResponded <- table(selResults$topo, selResults$responseToSel)
+numResponded
+numTopos <- as.vector(table(selResults$topo))
+numResponded[, 2]/numTopos
+#plot_numRespondedGenes <- ggplot(respondedGenes, aes(y = , x = topo)) +
+#  geom_violin(fill = genotypeColor, color = "black", trim = TRUE) +
+#  geom_boxplot(width = 0.1, alpha = 1, outlier.alpha = 0, fill = "white") +
+#  stat_summary(fun = mean, geom = "text", show.legend = FALSE, size = 5,
+#               hjust = 1.25, vjust = 3, color = "black", aes(label = round(..y.., digits = 3))) +
+#  stat_compare_means(comparisons = my_comparisons, label = "p.signif", method = "wilcox.test") +
+#  theme_pubclean() + 
+#  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+#        axis.title.x = element_text(size=16, face="bold"),
+#        axis.title.y = element_text(size=16, face="bold"),
+#        axis.text.x = element_text(size=10, face="bold"),
+#        axis.text.y = element_text(size=10, face="bold")) +
+#  scale_fill_manual(values = c("sel" = genotypeColor, "neutr" = genotypeColor)) +
+#  labs(x = "Network topology",
+#       y = expression(paste(bold("Selective pressure "), "|", bold(p), "|")))
+
+#plot_numRespondedGenes
+#ggsave(filename = sprintf("plot_numRespondedGenes.png"),
+#       plot = plot_numRespondedGenes, 
+#       device = "png", scale = 2, width = 6, height = 5.5, units = "cm",
+#       dpi = 300, limitsize = TRUE)
+```
+
+## Average expression variance, gen 1
+
+
+```{r mi-permutations-PCs-expr-var}
+numPermutations = 10000
+binNum = 30
+
+# observed MI
+obs_MI_PC1 <- calcInformation(netSelResults$ave_varP_1, 
+                                         netSelResults$PC1, binNum)
+obs_MI_PC2 <- calcInformation(netSelResults$ave_varP_1, 
+                                          netSelResults$PC2, binNum)
+
+# create MI null distributions from permutations
+MI_nullDistr_PC1 <- vector(mode = "numeric", length = numPermutations)
+MI_nullDistr_PC2 <- vector(mode = "numeric", length = numPermutations)
+
+for(permNum in 1:numPermutations)
+{
+  MI_nullDistr_PC1[permNum] <- 
+    calcInformation(netSelResults$ave_varP_1, 
+                    sample(netSelResults$PC1, 
+                           size = length(netSelResults$PC1)),
+                    binNum)
+  MI_nullDistr_PC2[permNum] <- 
+    calcInformation(netSelResults$ave_varP_1, 
+                    sample(netSelResults$PC2, 
+                           size = length(netSelResults$PC2)),
+                    binNum)
+}
+
+# pvals for observed MI and R 
+pval_MI_absInStrT <- 
+  (length(which(MI_nullDistr_PC1 > obs_MI_PC1)) + 1)/numPermutations
+pval_MI_absOutStrT <-
+  (length(which(MI_nullDistr_PC2 > obs_MI_PC2)) + 1)/numPermutations
+
+# pvals for observed MI and R 
+pval_MI_absInStrT <- 
+  (length(which(MI_nullDistr_PC1 > obs_MI_PC1)) + 1)/numPermutations
+pval_MI_absOutStrT <-
+  (length(which(MI_nullDistr_PC2 > obs_MI_PC2)) + 1)/numPermutations
+
+# title
+if(pval_MI_absInStrT == 1e-04) {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC1, digits = 2), "; p $\\leq$ 10^{-4}"))
+} else {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC1, digits = 2), "; p = ",  round(pval_MI_absInStrT, digits = 2)))
+}
+
+if(pval_MI_absOutStrT == 1e-04) {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC2, digits = 2), "; p $\\leq$ 10^{-4}"))
+} else {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC2, digits = 2), "; p = ",  round(pval_MI_absOutStrT, digits = 2)))
+}
+
+# write MI and p values to text file
+sink(paste0("../results/", jointResultsFolder, "/infoMeasures_ave_varP_1-PCs.txt"))
+cat(paste0("Variables: ave_varP_1; PC1\n",
+    "Observed MI: ", obs_MI_PC1, "; pval: ", pval_MI_absInStrT, "\n", 
+    "Variables: ave_varP_1; PC2\n",
+    "Observed MI: ", obs_MI_PC2, "; pval: ", pval_MI_absOutStrT, "\n"))
+sink()
+```
+
+
+```{r lm-global-netmetrics-PCs-ave_varP_1}
+lmModel <- lm(ave_varP_1 ~ PC1 + PC2, 
+                data = netSelResults)
+summary(lmModel)
+r.squaredGLMM(lmModel)
+
+# partial R^2
+library(rstatix)
+partial_R2_PC1 <- partial_eta_squared(lmModel)[1]
+partial_R2_PC2 <- partial_eta_squared(lmModel)[2]
+
+# R2m for plotting
+partial_R2m_absInStr_num <- round(partial_R2_PC1, digits = 2)
+partial_R2m_absOutStr_num <- round(partial_R2_PC2, digits = 2)
+R2m_absInStr_text <- TeX(paste0("partial R^{2} = ", partial_R2m_absInStr_num))
+R2m_absOutStr_text <- TeX(paste0("partial R^{2} = ", partial_R2m_absOutStr_num))
+
+# get fitted coefficients from the model fit
+coef_explVar1 <- signif(summary(lmModel)$coefficients[2, 1], digits = 2)
+coef_explVar2 <- signif(summary(lmModel)$coefficients[3, 1], digits = 3)
+
+# get p values from the model fit
+pval_explVar1 <- signif(summary(lmModel)$coefficients[2, 4], digits = 2)
+pval_explVar2 <- signif(summary(lmModel)$coefficients[3, 4], digits = 2)
+
+# double check that the p values are zero before renaming them
+if(summary(lmModel)$coefficients[2, 4] < 2.2e-16){pval_coef1_title = "p < 2.2 x 10^{-16}"} else
+  {pval_coef1_title = paste0("p = ", pval_explVar1)}
+if(summary(lmModel)$coefficients[3, 4] < 2.2e-16){pval_coef2_title = "p < 2.2 x 10^{-16}"} else 
+  {pval_coef2_title = paste0("p = ", pval_explVar2)}
+
+coef_pval_explVar1_title <- TeX(paste0("$\\beta$ = ", coef_explVar1, "; ", pval_coef1_title))
+coef_pval_explVar2_title <- TeX(paste0("$\\beta$ = ", coef_explVar2, "; ", pval_coef2_title))
+
+plot_PC1 <- ggplot(netSelResults, aes(y = ave_varP_1, x = PC1)) +
+  geom_point(aes(shape = topo, color = topo), alpha = 0.3, size = 2)+
+  geom_abline(slope = lmModel$coefficients[2], 
+              intercept = lmModel$coefficients[1],
+              color = "black", linetype = "dashed", size = 1) +
+  theme_bw() + 
+  theme(plot.title = element_text(size=12, face="bold",),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  scale_colour_manual(values = topoColors) +
+  labs(x = expression(bold("PC1 (diameter + centralization)")),
+       y = expression(paste(bold("Expression variance, gen. 1"))),
+       title = coef_pval_explVar1_title,
+       subtitle = R2m_absInStr_text,
+       color = "Topology",
+       shape = "Topology") + 
+  annotate('text', x = -3, y = 750, label = MI_obs_explVar1_title_with_pval, parse = TRUE, size = 4,  hjust = 0)
+plot_PC1
+
+plot_PC2 <- ggplot(netSelResults, aes(y = ave_varP_1, x = PC2)) +
+  geom_point(aes(shape = topo, color = topo), alpha = 0.3, size = 2)+
+  geom_abline(slope = lmModel$coefficients[3], 
+              intercept = lmModel$coefficients[1],
+              color = "black", linetype = "dashed", size = 1) +
+  theme_bw() + 
+  theme(plot.title = element_text(size=12, face="bold",),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  scale_colour_manual(values = topoColors) +
+  labs(x = expression(bold("PC2 (average degree)")),
+       y = expression(paste(bold("Expression variance, gen. 1"))),
+       title = coef_pval_explVar2_title,
+       subtitle = R2m_absOutStr_text,
+       color = "Topology",
+       shape = "Topology") +
+  annotate('text', x = -3, y = 750, label = MI_obs_explVar2_title_with_pval, parse = TRUE, size = 4,  hjust = 0)
+
+plot_PC2
+plot_netPropertiesFigure <- plot_grid(plot_PC1, plot_PC2,
+                                      labels = "AUTO",
+                                      label_size = 20,
+                                      label_fontface = "bold")
+ggsave(filename = sprintf("plot_netPropertiesFigure_averageExprVar.png"),
+       plot = plot_netPropertiesFigure, 
+       bg = "white",
+       path = pathToPlotsFolder, 
+       device = "png", 
+       scale = 2, height = 800, width = 1500, units = "px",
+       dpi = 300, limitsize = TRUE)
+ggsave(filename = sprintf("plot_netPropertiesFigure_averageExprVar.tiff"),
+       plot = plot_netPropertiesFigure, 
+       bg = "white",
+       path = pathToPlotsFolder, 
+       device = "tiff", 
+       scale = 2, height = 800, width = 1500, units = "px",
+       dpi = 300, limitsize = TRUE)
+```
+
+## Change of expression variance
+
+
+```{r mi-permutations-PCs-rel-delta-var}
+numPermutations = 10000
+binNum = 30
+
+# observed MI
+obs_MI_PC1 <- calcInformation(netSelResults$ave_relDeltaVar_10000, 
+                                         netSelResults$PC1, binNum)
+obs_MI_PC2 <- calcInformation(netSelResults$ave_relDeltaVar_10000, 
+                                          netSelResults$PC2, binNum)
+
+# create MI null distributions from permutations
+MI_nullDistr_PC1 <- vector(mode = "numeric", length = numPermutations)
+MI_nullDistr_PC2 <- vector(mode = "numeric", length = numPermutations)
+
+for(permNum in 1:numPermutations)
+{
+  MI_nullDistr_PC1[permNum] <- 
+    calcInformation(netSelResults$ave_relDeltaVar_10000, 
+                    sample(netSelResults$PC1, 
+                           size = length(netSelResults$PC1)),
+                    binNum)
+  MI_nullDistr_PC2[permNum] <- 
+    calcInformation(netSelResults$ave_relDeltaVar_10000, 
+                    sample(netSelResults$PC2, 
+                           size = length(netSelResults$PC2)),
+                    binNum)
+}
+
+# pvals for observed MI and R 
+pval_MI_absInStrT <- 
+  (length(which(MI_nullDistr_PC1 > obs_MI_PC1)) + 1)/numPermutations
+pval_MI_absOutStrT <-
+  (length(which(MI_nullDistr_PC2 > obs_MI_PC2)) + 1)/numPermutations
+
+# pvals for observed MI and R 
+pval_MI_absInStrT <- 
+  (length(which(MI_nullDistr_PC1 > obs_MI_PC1)) + 1)/numPermutations
+pval_MI_absOutStrT <-
+  (length(which(MI_nullDistr_PC2 > obs_MI_PC2)) + 1)/numPermutations
+
+# title
+if(pval_MI_absInStrT == 1e-04) {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC1, digits = 2), "; p $\\leq$ 10^{-4}"))
+} else {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC1, digits = 2), "; p = ",  round(pval_MI_absInStrT, digits = 2)))
+}
+
+if(pval_MI_absOutStrT == 1e-04) {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC2, digits = 2), "; p $\\leq$ 10^{-4}"))
+} else {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC2, digits = 2), "; p = ",  round(pval_MI_absOutStrT, digits = 2)))
+}
+
+# write MI and p values to text file
+sink(paste0("../results/", jointResultsFolder, "/infoMeasures_ave_relDeltaVar_10000-PCs.txt"))
+cat(paste0("Variables: ave_relDeltaVar_10000; PC1\n",
+    "Observed MI: ", obs_MI_PC1, "; pval: ", pval_MI_absInStrT, "\n", 
+    "Variables: ave_relDeltaVar_10000; PC2\n",
+    "Observed MI: ", obs_MI_PC2, "; pval: ", pval_MI_absOutStrT, "\n"))
+sink()
+```
+
+
+```{r lme-global-netmetrics-PCs-ave_relDeltaVar_10000}
+lmModel <- lm(ave_relDeltaVar_10000 ~ PC1 + PC2, 
+                data = netSelResults) 
+summary(lmModel)
+r.squaredGLMM(lmModel)
+
+# partial R^2
+library(rstatix)
+partial_R2_PC1 <- partial_eta_squared(lmModel)[1]
+partial_R2_PC2 <- partial_eta_squared(lmModel)[2]
+
+# R2m for plotting
+partial_R2m_absInStr_num <- round(partial_R2_PC1, digits = 2)
+partial_R2m_absOutStr_num <- round(partial_R2_PC2, digits = 2)
+R2m_absInStr_text <- TeX(paste0("partial R^{2} = ", partial_R2m_absInStr_num))
+R2m_absOutStr_text <- TeX(paste0("partial R^{2} = ", partial_R2m_absOutStr_num))
+
+# get fitted coefficients from the model fit
+coef_explVar1 <- signif(summary(lmModel)$coefficients[2, 1], digits = 2)
+coef_explVar2 <- signif(summary(lmModel)$coefficients[3, 1], digits = 3)
+#if(coef_explVar2 == -0.0096){coef_explVar2 = -0.009}
+
+# get p values from the model fit
+pval_explVar1 <- signif(summary(lmModel)$coefficients[2, 4], digits = 2)
+pval_explVar2 <- signif(summary(lmModel)$coefficients[3, 4], digits = 2)
+
+# double check that the p values are zero before renaming them
+if(summary(lmModel)$coefficients[2, 4] < 2.2e-16){pval_coef1_title = "p < 2.2 x 10^{-16}"} else
+  {pval_coef1_title = paste0("p = ", pval_explVar1)}
+if(summary(lmModel)$coefficients[3, 4] < 2.2e-16){pval_coef2_title = "p < 2.2 x 10^{-16}"} else 
+  {pval_coef2_title = paste0("p = ", pval_explVar2)}
+
+coef_pval_explVar1_title <- TeX(paste0("$\\beta$ = ", coef_explVar1, "; ", pval_coef1_title))
+coef_pval_explVar2_title <- TeX(paste0("$\\beta$ = ", coef_explVar2, "; ", pval_coef2_title))
+
+plot_PC1 <- ggplot(netSelResults, aes(y = ave_relDeltaVar_10000, x = PC1)) +
+  geom_point(aes(shape = topo, color = topo), alpha = 0.3, size = 2)+
+  geom_abline(slope = lmModel$coefficients[2], 
+              intercept = lmModel$coefficients[1],
+              color = "black", linetype = "dashed", size = 1) +
+  theme_bw() + 
+  theme(plot.title = element_text(size=12, face="bold",),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  scale_colour_manual(values = topoColors) +
+  labs(x = expression(bold("PC1 (diameter + centralization)")),
+       y = expression(bold("Rel."~Delta~"expr. variance")),
+       title = coef_pval_explVar1_title,
+       subtitle = R2m_absInStr_text,
+       color = "Topology",
+       shape = "Topology") +
+    annotate('text', x = -4, y = -0.4, label = MI_obs_explVar1_title_with_pval, parse = TRUE, size = 4,  hjust = 0)
+
+plot_PC1
+
+plot_PC2 <- ggplot(netSelResults, aes(y = ave_relDeltaVar_10000, x = PC2)) +
+  geom_point(aes(shape = topo, color = topo), alpha = 0.3, size = 2)+
+  geom_abline(slope = lmModel$coefficients[3], 
+              intercept = lmModel$coefficients[1],
+              color = "black", linetype = "dashed", size = 1) +
+  theme_bw() + 
+  theme(plot.title = element_text(size=12, face="bold",),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  scale_colour_manual(values = topoColors) +
+  labs(x = expression(bold("PC2 (average degree)")),
+       y = expression(bold("Rel."~Delta~"expr. variance")),
+       title = coef_pval_explVar2_title,
+       subtitle = R2m_absOutStr_text,
+       color = "Topology",
+       shape = "Topology") +
+  annotate('text', x = -3, y = -0.4, label = MI_obs_explVar2_title_with_pval, parse = TRUE, size = 4,  hjust = 0)
+
+plot_PC2
+plot_netPropertiesFigure <- plot_grid(plot_PC1, plot_PC2,
+                                      labels = "AUTO",
+                                      label_size = 20,
+                                      label_fontface = "bold")
+ggsave(filename = sprintf("plot_netPropertiesFigure_averageRelDeltaVar.png"),
+       plot = plot_netPropertiesFigure, 
+       bg = "white",
+       path = pathToPlotsFolder, 
+       device = "png", 
+       scale = 2, height = 800, width = 1500, units = "px",
+       dpi = 300, limitsize = TRUE)
+ggsave(filename = sprintf("plot_netPropertiesFigure_averageRelDeltaVar.tiff"),
+       plot = plot_netPropertiesFigure, 
+       bg = "white",
+       path = pathToPlotsFolder, 
+       device = "tiff", 
+       scale = 2, height = 800, width = 1500, units = "px",
+       dpi = 300, limitsize = TRUE)
+```
+
+```{r lme-global-netmetrics-PCs-ave_s_g_area_abs-with-topo}
+lmeModel <- lm(ave_s_g_area_abs ~ PC1 + PC2, 
+                data = netSelResults)
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+```
+
+## Selective pressure
+
+### Neutrality
+
+```{r mi-permutations-PCs-neutrality}
+numPermutations = 10000
+binNum = 30
+
+# observed MI
+obs_MI_PC1 <- calcInformation(netNeuResults$ave_s_g_area_abs, 
+                                         netNeuResults$PC1, binNum)
+obs_MI_PC2 <- calcInformation(netNeuResults$ave_s_g_area_abs, 
+                                          netNeuResults$PC2, binNum)
+
+# create MI null distributions from permutations
+MI_nullDistr_PC1 <- vector(mode = "numeric", length = numPermutations)
+MI_nullDistr_PC2 <- vector(mode = "numeric", length = numPermutations)
+
+for(permNum in 1:numPermutations)
+{
+  MI_nullDistr_PC1[permNum] <- 
+    calcInformation(netNeuResults$ave_s_g_area_abs, 
+                    sample(netNeuResults$PC1, 
+                           size = length(netNeuResults$PC1)),
+                    binNum)
+  MI_nullDistr_PC2[permNum] <- 
+    calcInformation(netNeuResults$ave_s_g_area_abs, 
+                    sample(netNeuResults$PC2, 
+                           size = length(netNeuResults$PC2)),
+                    binNum)
+}
+
+# pvals for observed MI and R 
+pval_MI_absInStrT <- 
+  (length(which(MI_nullDistr_PC1 > obs_MI_PC1)) + 1)/numPermutations
+pval_MI_absOutStrT <-
+  (length(which(MI_nullDistr_PC2 > obs_MI_PC2)) + 1)/numPermutations
+
+# pvals for observed MI and R 
+pval_MI_absInStrT <- 
+  (length(which(MI_nullDistr_PC1 > obs_MI_PC1)) + 1)/numPermutations
+pval_MI_absOutStrT <-
+  (length(which(MI_nullDistr_PC2 > obs_MI_PC2)) + 1)/numPermutations
+
+# title
+if(pval_MI_absInStrT == 1e-04) {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC1, digits = 2), "; p $\\leq$ 10^{-4}"))
+} else {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC1, digits = 2), "; p = ",  round(pval_MI_absInStrT, digits = 2)))
+}
+
+if(pval_MI_absOutStrT == 1e-04) {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC2, digits = 2), "; p $\\leq$ 10^{-4}"))
+} else {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC2, digits = 2), "; p = ",  round(pval_MI_absOutStrT, digits = 2)))
+}
+
+# write MI and p values to text file
+sink(paste0("../results/", jointResultsFolder, "/infoMeasures_s_g_area_abs-PCs_neutrality.txt"))
+cat(paste0("Variables: ave_s_g_area_abs; PC1\n",
+    "Observed MI: ", obs_MI_PC1, "; pval: ", pval_MI_absInStrT, "\n", 
+    "Variables: ave_s_g_area_abs; PC2\n",
+    "Observed MI: ", obs_MI_PC2, "; pval: ", pval_MI_absOutStrT, "\n"))
+sink()
+
+plot_hist_MI_obs_PC1 <- ggplot(data = data.frame(MI = MI_nullDistr_PC1), aes(x = MI)) +
+  geom_histogram(fill = MIColor, color = MIColor, bins = 50, alpha = 0.5) +
+  geom_vline(xintercept = obs_MI_PC1, col = MIColor, lwd = 2, lty = 2) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  labs(x = expression(paste(bold("Mutual Information (PC1)"))), y = "count",
+       title = MI_obs_explVar1_title_with_pval) +
+  annotate('text', x = obs_MI_PC1, y = Inf, label = "obs", parse = TRUE, size = 4, vjust = 3, hjust = 1.5)
+plot_hist_MI_obs_PC1
+ggsave(filename = sprintf("plot_hist_MI_obs_PC1_neu.png"),
+       path = pathToPlotsFolder,
+       plot = plot_hist_MI_obs_PC1, 
+       device = "png", scale = 2, width = 6, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+plot_hist_MI_obs_PC2 <- ggplot(data = data.frame(MI = MI_nullDistr_PC2), aes(x = MI)) +
+  geom_histogram(fill = MIColor, color = MIColor, bins = 50, alpha = 0.5) +
+  geom_vline(xintercept = obs_MI_PC2, col = MIColor, lwd = 2, lty = 2) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  labs(x = expression(paste(bold("Mutual Information (PC2)"))), y = "count",
+       title = MI_obs_explVar2_title_with_pval) +
+  annotate('text', x = obs_MI_PC2, y = Inf, label = "obs", parse = TRUE, size = 4, vjust = 3, hjust = 1.5)
+plot_hist_MI_obs_PC2
+ggsave(filename = sprintf("plot_hist_MI_obs_PC2_neu.png"),
+       path = pathToPlotsFolder,
+       plot = plot_hist_MI_obs_PC2, 
+       device = "png", scale = 2, width = 6, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+```
+
+```{r lme-global-netmetrics-PCs-ave_s_g_area_abs-neutrality}
+indeptest <- function(model) {
+  return(Box.test(resid(model)[order(fitted(model))], type = "Ljung-Box"))
+}
+
+lmModel <- lm(ave_s_g_area_abs ~ PC1 + PC2, 
+                data = netNeuResults)
+summary(lmModel)
+r.squaredGLMM(lmModel)
+vif(lmModel)
+
+shapiro.test(lmModel[['residuals']])
+indeptest(lmModel)
+
+partial_eta_squared(lmModel)
+
+# partial R^2
+partial_R2_PC1 <- partial_eta_squared(lmModel)[1]
+partial_R2_PC2 <- partial_eta_squared(lmModel)[2]
+
+# R2m for plotting
+partial_R2m_absInStr_num <- signif(partial_R2_PC1, digits = 2)
+partial_R2m_absOutStr_num <- signif(partial_R2_PC2, digits = 2)
+if(partial_R2m_absInStr_num == 1.5e-06){partial_R2m_absInStr_num = "1.5 x 10^{-6}"}
+if(partial_R2m_absOutStr_num == 9.8e-08){partial_R2m_absOutStr_num = "9.8 x 10^{-8}"}
+R2m_absInStr_text <- TeX(paste0("partial R^{2} = ", partial_R2m_absInStr_num))
+R2m_absOutStr_text <- TeX(paste0("partial R^{2} = ", partial_R2m_absOutStr_num))
+
+# get fitted coefficients from the model fit
+coef_explVar1 <- signif(summary(lmModel)$coefficients[2, 1], digits = 2)
+coef_explVar2 <- signif(summary(lmModel)$coefficients[3, 1], digits = 2)
+if(coef_explVar1 == -2.8e-07){coef_explVar1 = "-2.8 x 10^{-7}"}
+if(coef_explVar2 == -1e-07){coef_explVar2 = "-1 x 10^{-7}"}
+
+# get p values from the model fit
+pval_explVar1 <- signif(summary(lmModel)$coefficients[2, 4], digits = 2)
+pval_explVar2 <- signif(summary(lmModel)$coefficients[3, 4], digits = 2)
+
+# double check that the p values are zero before renaming them
+if(summary(lmModel)$coefficients[2, 4] < 2.2e-16){pval_coef1_title = "p < 2.2 x 10^{-16}"} else
+  {pval_coef1_title = paste0("p = ", pval_explVar1)}
+if(summary(lmModel)$coefficients[3, 4] < 2.2e-16){pval_coef2_title = "p < 2.2 x 10^{-16}"} else 
+  {pval_coef2_title = paste0("p = ", pval_explVar2)}
+
+coef_pval_explVar1_title <- TeX(paste0("$\\beta$ = ", coef_explVar1, "; ", pval_coef1_title))
+coef_pval_explVar2_title <- TeX(paste0("$\\beta$ = ", coef_explVar2, "; ", pval_coef2_title))
+
+plot_constVar_resid <- ggplot(data = data.frame("Fitted_values" = fitted(lmModel),
+                               "Pearsons_residuals" = resid(lmModel, type = "pearson")),
+                        aes(x = Fitted_values, y = Pearsons_residuals)) +
+                        geom_point(alpha = 0.2, size = 0.5) + 
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        annotate("label", x = 0.0070775, y = 0.0015, label = "Neutrality", size = 3) +
+                        labs(x = "Fitted values", y = "Pearson's residuals") 
+plot_constVar_qqResid <- ggplot(data = data.frame("Pearsons_residuals" = resid(lmModel, type = "pearson")),
+                                aes(sample = Pearsons_residuals)) +
+                          stat_qq(alpha = 0.2, size = 0.5) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "Theoretical quantiles", y = "Sample quantiles",
+                             title = "Normal Q-Q plot, residuals")
+plot_constVar_resid
+plot_constVar_qqResid
+```
+
+```{r PCs-selpress-plots-neutrality}
+plot_PC1_selpress_neu <- ggplot(netNeuResults, aes(y = ave_s_g_area_abs, x = PC1)) +
+  geom_point(aes(shape = topo, color = topo), alpha = 0.3, size = 2)+
+  theme_bw() + 
+  theme(plot.title = element_text(size=12, face="bold",),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "bottom",
+        legend.title = element_text(size=12),
+        legend.text = element_text(size=12)) +
+  scale_colour_manual(values = topoColors, 
+                      labels = c("random (Erdős–Rényi)", 
+                                 "scale-free (Barabási–Albert)", 
+                                 "small-world (Watts–Strogatz)")) +
+  scale_shape_manual(values = c("ER" = 19, "BA" = 17, "WS" = 15), 
+                     labels = c("random (Erdős–Rényi)", 
+                               "scale-free (Barabási–Albert)", 
+                               "small-world (Watts–Strogatz)")) +
+  labs(x = expression(bold("PC1 (diameter + centralization)")),
+       y = expression(paste(bold("Average selective pressure "), "|", bold(p), "|")),
+       title = coef_pval_explVar1_title,
+       subtitle = R2m_absInStr_text,
+       color = "Topology",
+       shape = "Topology") +
+  annotate('text', x = -4, y = 0.95, label = MI_obs_explVar1_title_with_pval, parse = TRUE, size = 4,  hjust = 0) +
+  ylim(0, 1)
+plot_PC1_selpress_neu
+
+plot_PC2_selpress_neu <- ggplot(netNeuResults, aes(y = ave_s_g_area_abs, x = PC2)) +
+  geom_point(aes(shape = topo, color = topo), alpha = 0.3, size = 2)+
+  theme_bw() + 
+  theme(plot.title = element_text(size=12, face="bold",),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "bottom",
+        legend.title = element_text(size=12),
+        legend.text = element_text(size=12)) +
+  scale_colour_manual(values = topoColors, 
+                      labels = c("random (Erdős–Rényi)", 
+                                 "scale-free (Barabási–Albert)", 
+                                 "small-world (Watts–Strogatz)")) +
+  scale_shape_manual(values = c("ER" = 19, "BA" = 17, "WS" = 15), 
+                     labels = c("random (Erdős–Rényi)", 
+                               "scale-free (Barabási–Albert)", 
+                               "small-world (Watts–Strogatz)")) +
+  labs(x = expression(bold("PC2 (average degree)")),
+       y = expression(paste(bold("Average selective pressure "), "|", bold(p), "|")),
+       title = coef_pval_explVar2_title,
+       subtitle = R2m_absOutStr_text,
+       color = "Topology",
+       shape = "Topology") +
+  annotate('text', x = -3, y = 0.95, label = MI_obs_explVar2_title_with_pval, parse = TRUE, size = 4,  hjust = 0) +
+  scale_x_continuous(n.breaks = 4) +
+  ylim(0, 1)
+plot_PC2_selpress_neu
+```
+
+
+### Selection
+
+```{r mi-permutations-PCs}
+numPermutations = 10000
+binNum = 30
+
+# observed MI
+obs_MI_PC1 <- calcInformation(netSelResults$ave_s_g_area_abs, 
+                                         netSelResults$PC1, binNum)
+obs_MI_PC2 <- calcInformation(netSelResults$ave_s_g_area_abs, 
+                                          netSelResults$PC2, binNum)
+
+# create MI null distributions from permutations
+MI_nullDistr_PC1 <- vector(mode = "numeric", length = numPermutations)
+MI_nullDistr_PC2 <- vector(mode = "numeric", length = numPermutations)
+
+for(permNum in 1:numPermutations)
+{
+  MI_nullDistr_PC1[permNum] <- 
+    calcInformation(netSelResults$ave_s_g_area_abs, 
+                    sample(netSelResults$PC1, 
+                           size = length(netSelResults$PC1)),
+                    binNum)
+  MI_nullDistr_PC2[permNum] <- 
+    calcInformation(netSelResults$ave_s_g_area_abs, 
+                    sample(netSelResults$PC2, 
+                           size = length(netSelResults$PC2)),
+                    binNum)
+}
+
+# pvals for observed MI and R 
+pval_MI_absInStrT <- 
+  (length(which(MI_nullDistr_PC1 > obs_MI_PC1)) + 1)/numPermutations
+pval_MI_absOutStrT <-
+  (length(which(MI_nullDistr_PC2 > obs_MI_PC2)) + 1)/numPermutations
+
+# pvals for observed MI and R 
+pval_MI_absInStrT <- 
+  (length(which(MI_nullDistr_PC1 > obs_MI_PC1)) + 1)/numPermutations
+pval_MI_absOutStrT <-
+  (length(which(MI_nullDistr_PC2 > obs_MI_PC2)) + 1)/numPermutations
+
+# title
+if(pval_MI_absInStrT == 1e-04) {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC1, digits = 2), "; p $\\leq$ 10^{-4}"))
+} else {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC1, digits = 2), "; p = ",  round(pval_MI_absInStrT, digits = 2)))
+}
+
+if(pval_MI_absOutStrT == 1e-04) {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC2, digits = 2), "; p $\\leq$ 10^{-4}"))
+} else {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_PC2, digits = 2), "; p = ",  round(pval_MI_absOutStrT, digits = 2)))
+}
+
+# write MI and p values to text file
+sink(paste0("../results/", jointResultsFolder, "/infoMeasures_s_g_area_abs-PCs.txt"))
+cat(paste0("Variables: ave_s_g_area_abs; PC1\n",
+    "Observed MI: ", obs_MI_PC1, "; pval: ", pval_MI_absInStrT, "\n", 
+    "Variables: ave_s_g_area_abs; PC2\n",
+    "Observed MI: ", obs_MI_PC2, "; pval: ", pval_MI_absOutStrT, "\n"))
+sink()
+
+plot_hist_MI_obs_PC1 <- ggplot(data = data.frame(MI = MI_nullDistr_PC1), aes(x = MI)) +
+  geom_histogram(fill = MIColor, color = MIColor, bins = 50, alpha = 0.5) +
+  geom_vline(xintercept = obs_MI_PC1, col = MIColor, lwd = 2, lty = 2) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  labs(x = expression(paste(bold("Mutual Information (PC1)"))), y = "count",
+       title = MI_obs_explVar1_title_with_pval) +
+  annotate('text', x = obs_MI_PC1, y = Inf, label = "obs", parse = TRUE, size = 4, vjust = 3, hjust = 1.5)
+plot_hist_MI_obs_PC1
+ggsave(filename = sprintf("plot_hist_MI_obs_PC1_sel.png"),
+       path = pathToPlotsFolder,
+       plot = plot_hist_MI_obs_PC1, 
+       device = "png", scale = 2, width = 6, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+plot_hist_MI_obs_PC2 <- ggplot(data = data.frame(MI = MI_nullDistr_PC2), aes(x = MI)) +
+  geom_histogram(fill = MIColor, color = MIColor, bins = 50, alpha = 0.5) +
+  geom_vline(xintercept = obs_MI_PC2, col = MIColor, lwd = 2, lty = 2) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  labs(x = expression(paste(bold("Mutual Information (PC2)"))), y = "count",
+       title = MI_obs_explVar2_title_with_pval) +
+  annotate('text', x = obs_MI_PC2, y = Inf, label = "obs", parse = TRUE, size = 4, vjust = 3, hjust = 1.5)
+plot_hist_MI_obs_PC2
+ggsave(filename = sprintf("plot_hist_MI_obs_PC2_sel.png"),
+       path = pathToPlotsFolder,
+       plot = plot_hist_MI_obs_PC2, 
+       device = "png", scale = 2, width = 6, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+```
+
+```{r lme-global-netmetrics-PCs-ave_s_g_area_abs-with-topo-repeat}
+indeptest <- function(model) {
+  return(Box.test(resid(model)[order(fitted(model))], type = "Ljung-Box"))
+}
+
+lmModel <- lm(ave_s_g_area_abs ~ PC1 + PC2, 
+                data = netSelResults)
+summary(lmModel)
+r.squaredGLMM(lmModel)
+vif(lmModel)
+
+shapiro.test(lmModel[['residuals']])
+indeptest(lmModel)
+
+partial_eta_squared(lmModel)
+
+# partial R^2
+partial_R2_PC1 <- partial_eta_squared(lmModel)[1]
+partial_R2_PC2 <- partial_eta_squared(lmModel)[2]
+
+# R2m for plotting
+partial_R2m_absInStr_num <- round(partial_R2_PC1, digits = 2)
+partial_R2m_absOutStr_num <- round(partial_R2_PC2, digits = 2)
+R2m_absInStr_text <- TeX(paste0("partial R^{2} = ", partial_R2m_absInStr_num))
+R2m_absOutStr_text <- TeX(paste0("partial R^{2} = ", partial_R2m_absOutStr_num))
+
+# get fitted coefficients from the model fit
+coef_explVar1 <- signif(summary(lmModel)$coefficients[2, 1], digits = 1)
+coef_explVar2 <- signif(summary(lmModel)$coefficients[3, 1], digits = 2)
+if(coef_explVar2 == -0.0096){coef_explVar2 = -0.009}
+
+# get p values from the model fit
+pval_explVar1 <- signif(summary(lmModel)$coefficients[2, 4], digits = 2)
+pval_explVar2 <- signif(summary(lmModel)$coefficients[3, 4], digits = 2)
+
+# double check that the p values are zero before renaming them
+if(summary(lmModel)$coefficients[2, 4] < 2.2e-16){pval_coef1_title = "p < 2.2 x 10^{-16}"} else
+  {pval_coef1_title = paste0("p = ", pval_explVar1)}
+if(summary(lmModel)$coefficients[3, 4] < 2.2e-16){pval_coef2_title = "p < 2.2 x 10^{-16}"} else 
+  {pval_coef2_title = paste0("p = ", pval_explVar2)}
+
+if(pval_explVar1 == 4.9e-11) {pval_coef1_title = paste0("p = 4.9 x 10^{-11}")}
+
+coef_pval_explVar1_title <- TeX(paste0("$\\beta$ = ", coef_explVar1, "; ", pval_coef1_title))
+coef_pval_explVar2_title <- TeX(paste0("$\\beta$ = ", coef_explVar2, "; ", pval_coef2_title))
+
+plot_constVar_resid_sel <- ggplot(data = data.frame("Fitted_values" = fitted(lmModel),
+                               "Pearsons_residuals" = resid(lmModel, type = "pearson")),
+                        aes(x = Fitted_values, y = Pearsons_residuals)) +
+                        geom_point(alpha = 0.2, size = 0.5) + 
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        annotate("label", x = 0.75, y = -0.5, label = "Selection", size = 3) +
+                        labs(x = "Fitted values", y = "Pearson's residuals") 
+plot_constVar_qqResid_sel <- ggplot(data = data.frame("Pearsons_residuals" = resid(lmModel, type = "pearson")),
+                                aes(sample = Pearsons_residuals)) +
+                          stat_qq(alpha = 0.2, size = 0.5) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "Theoretical quantiles", y = "Sample quantiles",
+                             title = "Normal Q-Q plot, residuals")
+plot_constVar_resid_sel
+plot_constVar_qqResid_sel
+plot_ModelDiagnostics <- plot_grid(plot_constVar_resid_sel, plot_constVar_qqResid_sel,
+                                   plot_constVar_resid, plot_constVar_qqResid,
+                                   ncol = 2,
+                                   labels = "AUTO")
+# save to plots folder
+ggsave(filename = sprintf("plot_ModelDiagnostics_networkProperties.png"),
+       path = pathToPlotsFolder,
+       plot = plot_ModelDiagnostics, 
+       device = "png", scale = 1.2, width = 12, height = 12, units = "cm",
+       dpi = 300, limitsize = TRUE,
+       bg = "white")
+```
+
+```{r PCs-selpress-plots}
+plot_PC1_selpress_sel <- ggplot(netSelResults, aes(y = ave_s_g_area_abs, x = PC1)) +
+  geom_point(aes(shape = topo, color = topo), alpha = 0.3, size = 2) +
+  geom_quantile(quantiles = c(.5), color = "black", size = 0.75) +
+  geom_quantile(quantiles = c(.25, .75), color = "black", size = 0.5, linetype = 2) +
+  theme_bw() + 
+  theme(plot.title = element_text(size=12, face="bold",),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "bottom",
+        legend.title = element_text(size=12),
+        legend.text = element_text(size=12)) +
+  scale_colour_manual(values = topoColors, 
+                      labels = c("random (Erdős–Rényi)", 
+                                 "scale-free (Barabási–Albert)", 
+                                 "small-world (Watts–Strogatz)")) +
+  scale_shape_manual(values = c("ER" = 19, "BA" = 17, "WS" = 15), 
+                     labels = c("random (Erdős–Rényi)", 
+                               "scale-free (Barabási–Albert)", 
+                               "small-world (Watts–Strogatz)")) +
+  labs(x = expression(bold("PC1 (diameter + centralization)")),
+       y = expression(paste(bold("Average selective pressure "), "|", bold(p), "|")),
+       title = coef_pval_explVar1_title,
+       subtitle = R2m_absInStr_text,
+       color = "Topology",
+       shape = "Topology") +
+  annotate('text', x = -4, y = 0.95, label = MI_obs_explVar1_title_with_pval, parse = TRUE, size = 4,  hjust = 0) +
+  ylim(0, 1)
+plot_PC1_selpress_sel
+
+plot_PC2_selpress_sel <- ggplot(netSelResults, aes(y = ave_s_g_area_abs, x = PC2)) +
+  geom_point(aes(shape = topo, color = topo), alpha = 0.3, size = 2) +
+  geom_quantile(quantiles = c(.5), color = "black", size = 0.75) +
+  geom_quantile(quantiles = c(.25, .75), color = "black", size = 0.5, linetype = 2) +
+  theme_bw() + 
+  theme(plot.title = element_text(size=12, face="bold",),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "bottom",
+        legend.title = element_text(size=12),
+        legend.text = element_text(size=12)) +
+  scale_colour_manual(values = topoColors, 
+                      labels = c("random (Erdős–Rényi)", 
+                                 "scale-free (Barabási–Albert)", 
+                                 "small-world (Watts–Strogatz)")) +
+  scale_shape_manual(values = c("ER" = 19, "BA" = 17, "WS" = 15), 
+                     labels = c("random (Erdős–Rényi)", 
+                               "scale-free (Barabási–Albert)", 
+                               "small-world (Watts–Strogatz)")) +
+  labs(x = expression(bold("PC2 (average degree)")),
+       y = expression(paste(bold("Average selective pressure "), "|", bold(p), "|")),
+       title = coef_pval_explVar2_title,
+       subtitle = R2m_absOutStr_text,
+       color = "Topology",
+       shape = "Topology") +
+  annotate('text', x = -3, y = 0.95, label = MI_obs_explVar2_title_with_pval, parse = TRUE, size = 4,  hjust = 0) +
+  scale_x_continuous(n.breaks = 4) +
+  ylim(0, 1)
+plot_PC2_selpress_sel
+```
+
+# Final plot
+
+```{r final-plot}
+jointTitle_sel <- ggdraw() + draw_label("Selection",
+                                        size = 20,
+                                        fontface = 'bold')
+jointTitle_neu <- ggdraw() + draw_label("Neutrality", 
+                                        size = 20,
+                                        fontface = 'bold')
+jointTitle_combined <- cowplot::plot_grid(NULL, jointTitle_sel, NULL,
+                                 NULL, jointTitle_neu, NULL,
+                                 labels = c("", "", "", "", "", ""),
+                                 ncol = 6,
+                                 rel_widths = c(0.5, 1, 0.5, 0.5, 1, 0.5))
+
+plot_netPropertiesFigure_body <- ggpubr::ggarrange(plot_PC1_selpress_sel, plot_PC2_selpress_sel,
+                                           plot_PC1_selpress_neu, plot_PC2_selpress_neu,
+                                           labels = "AUTO", font.label = list(size = 20, face = "bold"),
+                                           ncol = 4, nrow = 1, 
+                                           common.legend = TRUE, legend = "bottom")
+plot_netPropertiesFigure <- cowplot::plot_grid(jointTitle_combined,
+                                       plot_netPropertiesFigure_body,
+                                       ncol = 1,
+                                       rel_heights = c(0.1, 1))
+
+ggsave(filename = sprintf("plot_netPropertiesFigure.png"),
+       plot = plot_netPropertiesFigure, 
+       bg = "white",
+       path = pathToPlotsFolder, 
+       device = "png", 
+       scale = 2.1, height = 800, width = 2250, units = "px",
+       dpi = 300, limitsize = TRUE)
+ggsave(filename = sprintf("plot_netPropertiesFigure.tiff"),
+       plot = plot_netPropertiesFigure, 
+       bg = "white",
+       path = pathToPlotsFolder, 
+       device = "tiff", 
+       scale = 2.1, height = 900, width = 2250, units = "px",
+       dpi = 300, limitsize = TRUE)
+```
+
+```{r package-versions}
+sessionInfo()
+packageVersion('igraph')
+packageVersion('intergraph')
+packageVersion('lme4')
+packageVersion('nlme')
+packageVersion('MuMIn')
+packageVersion('infotheo')
+packageVersion('car')
+packageVersion('ade4')
+```

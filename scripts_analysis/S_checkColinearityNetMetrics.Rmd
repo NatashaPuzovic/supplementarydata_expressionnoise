@@ -1,0 +1,306 @@
+---
+title: "Colinearity of network metrics"
+author: "Natasha Puzovic (puzovic@evolbio.mpg.de)"
+date: "Oct 09, 2021"
+output:
+  pdf_document:
+  toc: yes
+html_document:
+  df_print: paged
+number_sections: yes
+toc: yes
+---
+  
+# Read data
+Read the genotype, phenotype and fitness information of evolved populations of 2000 random network topology samples.
+
+```{r read-data}
+resultsFolder = "20210609_ER_40node_0.05dens"
+path = paste0("../results/", resultsFolder)
+
+# read results and split into sel & neutr
+allNetsResults <- read.table(paste0(path, "/allNetsResults_prepped.txt"), sep = "\t", header = TRUE)
+```
+
+```{r filtering}
+# keep only pure regulators and purely regulated genes
+justRegulators <- allNetsResults[allNetsResults$absInStr == 0, ] 
+justRegulated <- allNetsResults[allNetsResults$absOutStr == 0, ] 
+
+# Filter 1
+allNetsResults_regulatorsOrRegulated <- rbind(justRegulators, justRegulated)
+
+# Filter 2
+# remove genes of degree 1 because they make in and outlink metrics colinear
+# reason: when we generate networks we impose that the network must have a single component
+# i.e. all genes are connected. Many genes end up having just one connection, which can be either
+# an in or outlink. 
+allNetsResults_bothRegs <- allNetsResults
+allNetsResults_bothRegs <- allNetsResults_bothRegs[allNetsResults_bothRegs$absInStr != 0, ] 
+allNetsResults_bothRegs <- allNetsResults_bothRegs[allNetsResults_bothRegs$absOutStr != 0, ] 
+```
+
+# Load packages & misc
+
+```{r load-packages}
+library(nlme)
+library(MuMIn) # for r.squared in lme models
+library(ggplot2)
+library(ggpubr) # for the pubclean theme
+library(ggExtra) # for marginal distributions
+library(gridExtra)
+library(cowplot) # for arranging plots
+#library(infotheo)
+#library(ppcor)
+library(lme4)
+#library(car) # for vif measure
+#library(Hmisc)
+#library(corrplot)
+library(RColorBrewer) # for color palettes
+
+# colors for plots
+noiseColor = "#01665e"
+genotypeColor = "#7b3294"
+netMetricColor = brewer.pal(n = 3, name = "Blues")[3]
+```
+
+```{r, setup, include=FALSE}
+plotsFolder = "../plots/checkColinearityNetMetrics"
+if (!dir.exists(plotsFolder)) {
+  dir.create(plotsFolder)
+}
+```
+
+# Correlation between the network metrics
+
+```{r 1-check-collinearity-between-explanatory-variables-untransformed}
+corSpearman1 <- cor.test(allNetsResults$absInStr, allNetsResults$absOutStr, method = "spearman", exact = FALSE)
+Spearman_pval <- paste0("p = ", round(corSpearman1$p.value, digits = 2))
+if(corSpearman1$p.value < 2.2e-16) {Spearman_pval = "p < 2.2e-16"}
+Spearman_coef <- round(corSpearman1$estimate, digits = 2)
+
+corKendall1 <- cor.test(allNetsResults$absInStr, allNetsResults$absOutStr, method = "kendall", exact = FALSE)
+Kendall_pval <- paste0("p = ", round(corKendall1$p.value, digits = 2))
+if(corKendall1$p.value < 2.2e-16) {Kendall_pval = "p < 2.2e-16"}
+Kendall_coef <- round(corKendall1$estimate, digits = 2)
+
+plot_absInStr_absOutStr_unT <- ggplot(allNetsResults, aes(x = absInStr, y = absOutStr)) +
+  geom_hex(bins = 50) +
+  scale_fill_gradientn(colors = brewer.pal(4,"Blues")) +
+  theme_minimal() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Abs. instrength", y = "Abs. outstrength", 
+       title = "Unfiltered, untransformed",
+       subtitle = paste0("Spearman's rho = ", Spearman_coef, ", ", Spearman_pval, "\n",
+                         "Kendall's r = ", Kendall_coef, ", ", Kendall_pval))
+plot_absInStr_absOutStr_unT <- ggMarginal(plot_absInStr_absOutStr_unT + geom_point(col = "transparent"), 
+                                          type = "histogram", fill = netMetricColor)
+ggsave(filename = sprintf("plot_absInStr_absOutStr_unT_unfiltered.png"),
+       plot = plot_absInStr_absOutStr_unT, 
+       path = "../plots/checkColinearityNetMetrics",
+       device = "png", scale = 2, width = 8, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+```
+
+
+```{r 1-check-collinearity-between-explanatory-variables-sqrt-transformed}
+corSpearman1 <- cor.test(allNetsResults$absInStrT_sqrt, allNetsResults$absOutStrT_sqrt, method = "spearman", exact = FALSE)
+Spearman_pval <- paste0("p = ", round(corSpearman1$p.value, digits = 2))
+if(corSpearman1$p.value < 2.2e-16) {Spearman_pval = "p < 2.2e-16"}
+Spearman_coef <- round(corSpearman1$estimate, digits = 2)
+
+corKendall1 <- cor.test(allNetsResults$absInStrT_sqrt, allNetsResults$absOutStrT_sqrt, method = "kendall", exact = FALSE)
+Kendall_pval <- paste0("p = ", round(corKendall1$p.value, digits = 2))
+if(corKendall1$p.value < 2.2e-16) {Kendall_pval = "p < 2.2e-16"}
+Kendall_coef <- round(corKendall1$estimate, digits = 2)
+
+plot_absInStr_absOutStr_T_sqrt <- ggplot(allNetsResults, aes(x = absInStrT_sqrt, y = absOutStrT_sqrt)) +
+  geom_hex(bins = 50) +
+  scale_fill_gradientn(colors = brewer.pal(4,"Blues")) +
+  theme_minimal() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Abs. instrength (sqrt)", y = "Abs. outstrength (sqrt)",
+       title = "Unfiltered, transformed",
+       subtitle = paste0("Spearman's rho = ", Spearman_coef, ", ", Spearman_pval, "\n",
+                         "Kendall's r = ", Kendall_coef, ", ", Kendall_pval))
+plot_absInStr_absOutStr_T_sqrt <- ggMarginal(plot_absInStr_absOutStr_T_sqrt + geom_point(col = "transparent"),
+                                             type = "histogram", fill = netMetricColor)
+ggsave(filename = sprintf("plot_absInStr_absOutStr_T_sqrt.png"),
+       plot = plot_absInStr_absOutStr_T_sqrt, 
+       path = "../plots/checkColinearityNetMetrics",
+       device = "png", scale = 2, width = 8, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+```
+
+
+```{r 1-check-collinearity-between-explanatory-variables-log1p-transformed}
+corSpearman1 <- cor.test(allNetsResults$absInStrT_log1p, allNetsResults$absOutStrT_log1p, method = "spearman", exact = FALSE)
+Spearman_pval <- paste0("p = ", round(corSpearman1$p.value, digits = 2))
+if(corSpearman1$p.value < 2.2e-16) {Spearman_pval = "p < 2.2e-16"}
+Spearman_coef <- round(corSpearman1$estimate, digits = 2)
+
+corKendall1 <- cor.test(allNetsResults$absInStrT_log1p, allNetsResults$absOutStrT_log1p, method = "kendall", exact = FALSE)
+Kendall_pval <- paste0("p = ", round(corKendall1$p.value, digits = 2))
+if(corKendall1$p.value < 2.2e-16) {Kendall_pval = "p < 2.2e-16"}
+Kendall_coef <- round(corKendall1$estimate, digits = 2)
+
+plot_absInStr_absOutStr_T_log1p <- ggplot(allNetsResults, aes(x = absInStrT_log1p, y = absOutStrT_log1p)) +
+  geom_hex(bins = 50) +
+  scale_fill_gradientn(colors = brewer.pal(4,"Blues")) +
+  theme_minimal() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Abs. instrength (log1p)", y = "Abs. outstrength (log1p)",
+       subtitle = paste0("Spearman's rho = ", Spearman_coef, ", ", Spearman_pval, "\n",
+                         "Kendall's r = ", Kendall_coef, ", ", Kendall_pval))
+plot_absInStr_absOutStr_T_log1p <- ggMarginal(plot_absInStr_absOutStr_T_log1p + geom_point(col = "transparent"),
+                                              type = "histogram", fill = netMetricColor)
+ggsave(filename = sprintf("plot_absInStr_absOutStr_T_log1p.png"),
+       plot = plot_absInStr_absOutStr_T_log1p, 
+       path = "../plots/checkColinearityNetMetrics",
+       device = "png", scale = 2, width = 8, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+```
+
+```{r 1-check-collinearity-between-explanatory-variables-log10-transformed}
+corSpearman1 <- cor.test(allNetsResults$absInStrT_log10, allNetsResults$absOutStrT_log10, method = "spearman", exact = FALSE)
+Spearman_pval <- paste0("p = ", round(corSpearman1$p.value, digits = 2))
+if(corSpearman1$p.value < 2.2e-16) {Spearman_pval = "p < 2.2e-16"}
+Spearman_coef <- round(corSpearman1$estimate, digits = 2)
+
+corKendall1 <- cor.test(allNetsResults$absInStrT_log10, allNetsResults$absInStrT_log10, method = "kendall", exact = FALSE)
+Kendall_pval <- paste0("p = ", round(corKendall1$p.value, digits = 2))
+if(corKendall1$p.value < 2.2e-16) {Kendall_pval = "p < 2.2e-16"}
+Kendall_coef <- round(corKendall1$estimate, digits = 2)
+
+plot_absInStr_absOutStr_T_log10 <- ggplot(allNetsResults, aes(x = absInStrT_log10, y = absOutStrT_log10)) +
+  geom_hex(bins = 50) +
+  scale_fill_gradientn(colors = brewer.pal(4,"Blues")) +
+  theme_minimal() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Abs. instrength (log10)", y = "Abs. outstrength (log10)",
+       subtitle = paste0("Spearman's rho = ", Spearman_coef, ", ", Spearman_pval, "\n",
+                         "Kendall's r = ", Kendall_coef, ", ", Kendall_pval))
+plot_absInStr_absOutStr_T_log10 <- ggMarginal(plot_absInStr_absOutStr_T_log10 + geom_point(col = "transparent"),
+                                              type = "histogram", fill = netMetricColor)
+ggsave(filename = sprintf("plot_absInStr_absOutStr_T_log10.png"),
+       plot = plot_absInStr_absOutStr_T_log10, 
+       path = "../plots/checkColinearityNetMetrics",
+       device = "png", scale = 2, width = 8, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+```
+
+```{r 1-filtered-1-check-collinearity-between-explanatory-variables-sqrt-transformed}
+corSpearman1 <- cor.test(allNetsResults_regulatorsOrRegulated$absInStrT_sqrt, 
+                         allNetsResults_regulatorsOrRegulated$absOutStrT_sqrt, method = "spearman", exact = FALSE)
+Spearman_pval <- paste0("p = ", round(corSpearman1$p.value, digits = 2))
+if(corSpearman1$p.value < 2.2e-16) {Spearman_pval = "p < 2.2e-16"}
+Spearman_coef <- round(corSpearman1$estimate, digits = 2)
+
+corKendall1 <- cor.test(allNetsResults_regulatorsOrRegulated$absInStrT_sqrt,
+                        allNetsResults_regulatorsOrRegulated$absOutStrT_sqrt, method = "kendall", exact = FALSE)
+Kendall_pval <- paste0("p = ", round(corKendall1$p.value, digits = 2))
+if(corKendall1$p.value < 2.2e-16) {Kendall_pval = "p < 2.2e-16"}
+Kendall_coef <- round(corKendall1$estimate, digits = 2)
+
+plot_absInStr_absOutStr_T_sqrt_f1 <- ggplot(allNetsResults_regulatorsOrRegulated, aes(x = absInStrT_sqrt, y = absOutStrT_sqrt)) +
+  geom_hex(bins = 50) +
+  scale_fill_gradientn(colors = brewer.pal(4,"Blues")) +
+  theme_minimal() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Abs. instrength (sqrt)", y = "Abs. outstrength (sqrt)", 
+       title = "Filtered 1, transformed",
+       subtitle = paste0("Spearman's rho = ", Spearman_coef, ", ", Spearman_pval, "\n",
+                         "Kendall's r = ", Kendall_coef, ", ", Kendall_pval))
+plot_absInStr_absOutStr_T_sqrt_f1 <- ggMarginal(plot_absInStr_absOutStr_T_sqrt_f1 + geom_point(col = "transparent"),
+                                             type = "histogram", fill = netMetricColor)
+ggsave(filename = sprintf("plot_absInStr_absOutStr_T_sqrt_filter1.png"),
+       plot = plot_absInStr_absOutStr_T_sqrt_f1, 
+       path = "../plots/checkColinearityNetMetrics",
+       device = "png", scale = 2, width = 8, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+```
+
+```{r 1-filtered-2-check-collinearity-between-explanatory-variables-sqrt-transformed}
+corSpearman1 <- cor.test(allNetsResults_bothRegs$absInStrT_sqrt, 
+                         allNetsResults_bothRegs$absOutStrT_sqrt, method = "spearman", exact = FALSE)
+Spearman_pval <- paste0("p = ", round(corSpearman1$p.value, digits = 2))
+if(corSpearman1$p.value < 2.2e-16) {Spearman_pval = "p < 2.2e-16"}
+Spearman_coef <- round(corSpearman1$estimate, digits = 2)
+
+corKendall1 <- cor.test(allNetsResults_bothRegs$absInStrT_sqrt,
+                        allNetsResults_bothRegs$absOutStrT_sqrt, method = "kendall", exact = FALSE)
+Kendall_pval <- paste0("p = ", round(corKendall1$p.value, digits = 2))
+if(corKendall1$p.value < 2.2e-16) {Kendall_pval = "p < 2.2e-16"}
+Kendall_coef <- round(corKendall1$estimate, digits = 2)
+
+plot_absInStr_absOutStr_T_sqrt_f2 <- ggplot(allNetsResults_bothRegs, aes(x = absInStrT_sqrt, y = absOutStrT_sqrt)) +
+  geom_hex(bins = 50) +
+  scale_fill_gradientn(colors = brewer.pal(4,"Blues")) +
+  theme_minimal() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Abs. instrength (sqrt)", y = "Abs. outstrength (sqrt)", 
+       title = "Filtered 2, transformed",
+       subtitle = paste0("Spearman's rho = ", Spearman_coef, ", ", Spearman_pval, "\n",
+                         "Kendall's r = ", Kendall_coef, ", ", Kendall_pval))
+plot_absInStr_absOutStr_T_sqrt_f2 <- ggMarginal(plot_absInStr_absOutStr_T_sqrt_f2 + geom_point(col = "transparent"),
+                                             type = "histogram", fill = netMetricColor)
+ggsave(filename = sprintf("plot_absInStr_absOutStr_T_sqrt_filter2.png"),
+       plot = plot_absInStr_absOutStr_T_sqrt_f2, 
+       path = "../plots/checkColinearityNetMetrics",
+       device = "png", scale = 2, width = 8, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+```
+
+
+```{r combine}
+plot_absInStr_absOutStr_combined <- plot_grid(plot_absInStr_absOutStr_unT,
+                        plot_absInStr_absOutStr_T_sqrt,
+                        plot_absInStr_absOutStr_T_sqrt_f1,
+                        plot_absInStr_absOutStr_T_sqrt_f2,
+                        scale = c(0.95, 0.95, 0.95, 0.95),
+                        labels = "AUTO",
+                        label_size = 24,
+                        label_fontface = "bold")
+ggsave(filename = sprintf("plot_absInStr_absOutStr_combined.png"),
+       plot = plot_absInStr_absOutStr_combined, 
+       bg = "white",
+       path = "../plots/checkColinearityNetMetrics",
+       device = "png", scale = 2, width = 15, height = 15, units = "cm",
+       dpi = 300, limitsize = TRUE)
+```

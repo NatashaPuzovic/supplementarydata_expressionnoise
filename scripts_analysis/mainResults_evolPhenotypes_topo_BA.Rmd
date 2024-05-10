@@ -1,0 +1,1230 @@
+---
+title: "Simulations results: change of phenotypes - BA networks"
+author: "Natasha Puzovic (puzovic@evolbio.mpg.de)"
+date: "Jul 10, 2022"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    df_print: paged
+    number_sections: yes
+    toc: yes
+---
+
+# Read data
+Read the genotype, phenotype and fitness information of evolved populations of 2000 random network topology samples.
+
+```{r read-data}
+resultsFolder = "20211201_BA_40node_0.05dens"
+path = paste0("../results/", resultsFolder)
+
+# read results and split into sel & neutr
+allNetsResults <- read.table(paste0(path, "/allNetsResults_prepped.txt"), sep = "\t", header = TRUE)
+selResults <- allNetsResults[allNetsResults$scen == "sel", ]
+neutrResults <- allNetsResults[allNetsResults$scen == "neu", ]
+```
+
+## Load packages, functions & colors
+
+```{r load-packages}
+library(nlme)
+library(MuMIn) # for r.squared in lme models
+library(ggplot2)
+library(ggpubr) # for the pubclean theme
+library(ggridges)
+library(gridExtra)
+library(cowplot) # for arranging plots
+library(infotheo)
+library(lme4)
+library(car) # for vif measure
+library(RColorBrewer) # for color palettes
+library(latex2exp) # for latex notation in the plots
+library(reshape2)
+library(dplyr)
+
+library(formattable) # for nice tables
+library(htmltools) # for outputting the table
+library(webshot) # for outputting the table
+
+# MI 
+calcInformation <- function (v1, v2, binNum) {
+  
+  # discretize 
+  d_v1 <- discretize(v1, nbins = binNum);
+  d_v2 <- discretize(v2, nbins = binNum)
+  
+  # mutual information
+  I_v1v2 <- mutinformation(d_v1, d_v2);
+
+  return("MI" = I_v1v2)
+}
+
+# colors for plots
+noiseColor = "#01665e"
+genotypeColor = "#7b3294"
+phenotypeColor = "#d95f0e"
+fitnessColor = "#e78ac3"
+neutralityColor = "darkgray"
+customGreenAIC = "#41ab5d"
+MIColor = "#2c7fb8"
+
+# bin numbers and number of permutations
+binNum = 30
+numPermutations = 10000
+```
+
+```{r, setup, include=FALSE}
+plotsFolder = "../plots/mainResults_evolutionOfPhenotypes_topo_BA"
+if (!dir.exists(plotsFolder)) {
+  dir.create(plotsFolder)
+}
+```
+
+# Evolution of phenotypes (neutrality)
+## Mutual Information
+
+```{r mi-permutations-neu}
+# observed MI
+obs_MI_absInStrT_sqrt <- calcInformation(neutrResults$relDeltaVar_10000, 
+                                         neutrResults$absInStrT_sqrt, binNum)
+obs_MI_absOutStrT_sqrt <- calcInformation(neutrResults$relDeltaVar_10000, 
+                                          neutrResults$absOutStrT_sqrt, binNum)
+
+# create MI null distributions from permutations
+MI_nullDistr_absInStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+MI_nullDistr_absOutStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+
+for(permNum in 1:numPermutations)
+{
+  MI_nullDistr_absInStrT_sqrt[permNum] <- 
+    calcInformation(neutrResults$relDeltaVar_10000, 
+                    sample(neutrResults$absInStrT_sqrt, 
+                           size = length(neutrResults$absInStrT_sqrt)),
+                    binNum)
+  MI_nullDistr_absOutStrT_sqrt[permNum] <- 
+    calcInformation(neutrResults$relDeltaVar_10000, 
+                    sample(neutrResults$absOutStrT_sqrt, 
+                           size = length(neutrResults$absOutStrT_sqrt)),
+                    binNum)
+}
+
+# pvals for observed MI and R 
+pval_MI_absInStrT <- 
+  (length(which(MI_nullDistr_absInStrT_sqrt > obs_MI_absInStrT_sqrt)) + 1)/numPermutations
+pval_MI_absOutStrT <-
+  (length(which(MI_nullDistr_absOutStrT_sqrt > obs_MI_absOutStrT_sqrt)) + 1)/numPermutations
+
+# title
+if(pval_MI_absInStrT == 1e-04) {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_absInStrT_sqrt, digits = 2), "; p $\\leq$ 10^{-4}"))
+} else {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_absInStrT_sqrt, digits = 2), "; p = ",  pval_MI_absInStrT))
+}
+
+if(pval_MI_absOutStrT == 1e-04) {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_absOutStrT_sqrt, digits = 2), "; p $\\leq$ 10^{-4}"))
+} else {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_absOutStrT_sqrt, digits = 2), "; p = ",  pval_MI_absOutStrT))
+}
+
+# write MI and p values to text file
+sink(paste0("../results/", resultsFolder, "/infoMeasures_relDeltaVar-centralityMetrics-neutrality.txt"))
+cat(paste0("Variables: relDeltaVar_10000; absInStrT_sqrt\n",
+    "Observed MI: ", obs_MI_absInStrT_sqrt, "; pval: ", pval_MI_absInStrT, "\n", 
+    "Variables: relDeltaVar_10000; absOutStrT_sqrt\n",
+    "Observed MI: ", obs_MI_absOutStrT_sqrt, "; pval: ", pval_MI_absOutStrT, "\n"))
+sink()
+
+plot_hist_MI_obs_in <- ggplot(data = data.frame(MI = MI_nullDistr_absInStrT_sqrt), aes(x = MI)) +
+  geom_histogram(fill = MIColor, color = MIColor, bins = 50, alpha = 0.5) +
+  geom_vline(xintercept = obs_MI_absInStrT_sqrt, col = MIColor, lwd = 1, lty = 2) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  labs(x = expression(paste(bold("Mutual Information (Instrength)"))), y = "count",
+       title = MI_obs_explVar1_title_with_pval) +
+  annotate('text', x = obs_MI_absInStrT_sqrt, y = Inf, label = "obs", parse = TRUE, size = 4, vjust = 3, hjust = 1.5)
+plot_hist_MI_obs_in
+ggsave(filename = sprintf("plot_hist_MI_obs_in_neu.png"),
+       path = plotsFolder,
+       plot = plot_hist_MI_obs_in, 
+       device = "png", scale = 2, width = 6, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+plot_hist_MI_obs_out <- ggplot(data = data.frame(MI = MI_nullDistr_absOutStrT_sqrt), aes(x = MI)) +
+  geom_histogram(fill = MIColor, color = MIColor, bins = 50, alpha = 0.5) +
+  geom_vline(xintercept = obs_MI_absOutStrT_sqrt, col = MIColor, lwd = 1, lty = 2) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  labs(x = expression(paste(bold("Mutual Information (Outstrength)"))), y = "count",
+       title = MI_obs_explVar2_title_with_pval) +
+  annotate('text', x = obs_MI_absOutStrT_sqrt, y = Inf, label = "obs", parse = TRUE, size = 4, vjust = 3, hjust = 1.5)
+plot_hist_MI_obs_out
+ggsave(filename = sprintf("plot_hist_MI_obs_out_neu.png"),
+       path = plotsFolder,
+       plot = plot_hist_MI_obs_out, 
+       device = "png", scale = 2, width = 6, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+
+cor.test(neutrResults$relDeltaVar_10000, neutrResults$absInStrT_sqrt, method = "spearman", exact = FALSE)
+cor.test(neutrResults$relDeltaVar_10000, neutrResults$absOutStrT_sqrt, method = "spearman", exact = FALSE)
+
+cor.test(neutrResults$relDeltaVar_10000, neutrResults$absInStrT_sqrt, method = "kendall")
+cor.test(neutrResults$relDeltaVar_10000, neutrResults$absOutStrT_sqrt, method = "kendall")
+```
+
+## Linear mixed-effects model
+### Fit with constant variance
+
+```{r preview-plots-neu}
+plot_relDeltaVar_absInStr_neu <- ggplot(neutrResults, aes(x = absInStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 40) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  labs(x = "Instrength (sqrt)",
+       y = expression(bold("Rel."~Delta~"expr. variance (transf.)"))) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  ylim(0, 1.5)
+plot_relDeltaVar_absOutStr_neu <- ggplot(neutrResults, aes(x = absOutStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 40) +
+  theme_pubclean() +
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  labs(x = "Outstrength (sqrt)",
+       y = expression(bold("Rel."~Delta~"expr. variance (transf.)"))) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  ylim(0, 1.5)
+
+grid.arrange(plot_relDeltaVar_absInStr_neu, plot_relDeltaVar_absOutStr_neu, ncol = 2)
+```
+
+```{r model-fit-const-variance-neu}
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                data = neutrResults[!is.na(neutrResults$relDeltaVar_10000), ],
+                random = ~1|net) 
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+
+plot(fitted(lmeModel), resid(lmeModel, type = "pearson"), 
+     pch = 16, cex = 0.25, col = alpha(rgb(0, 0, 0.5), 0.1),
+     main = "Pearson's residuals")
+```
+
+```{r calc-partial-R2-neu}
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                data = neutrResults[!is.na(neutrResults$relDeltaVar_10000), ],
+                random = ~1|net,
+                method = "ML") 
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+
+lmeModel_null_absInStr <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt, 
+                data = neutrResults[!is.na(neutrResults$relDeltaVar_10000), ],
+                random = ~1|net,
+                method = "ML")
+lmeModel_null_absOutStr <- lme(sqrt(relDeltaVar_10000 + 1) ~ absOutStrT_sqrt, 
+                data = neutrResults[!is.na(neutrResults$relDeltaVar_10000), ],
+                random = ~1|net,
+                method = "REML") 
+
+# partical R^2_{m} for instrength
+partial_R2m_absInStr <- r.squaredLR(lmeModel, null = lmeModel_null_absOutStr)
+
+# partical R^2_{m} for outstrength
+partial_R2m_absOutStr <- r.squaredLR(lmeModel, null = lmeModel_null_absInStr)
+```
+
+```{r plot-predicted-neu}
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                data = neutrResults[!is.na(neutrResults$relDeltaVar_10000), ],
+                random = ~1|net) 
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+print("VIF:")
+vif(lmeModel)
+
+# get fitted coefficients from the model fit
+coef_explVar1 <- signif(summary(lmeModel)$tTable[2, 1], 2)
+coef_explVar2 <- signif(summary(lmeModel)$tTable[3, 1], 2)
+
+# get p values from the model fit
+pval_explVar1 <- signif(summary(lmeModel)$tTable[2, 5], 2)
+pval_explVar2 <- signif(summary(lmeModel)$tTable[3, 5], 2)
+
+# double check that the p values are zero before renaming them
+if(summary(lmeModel)$tTable[2, 5] < 2.2e-16){pval_coef1_title = "p < 2.2 x 10^{-16}"} else
+  {pval_coef1_title = paste0("p = ", pval_explVar1)}
+if(summary(lmeModel)$tTable[3, 5] < 2.2e-16){pval_coef2_title = "p < 2.2 x 10^{-16}"} else 
+  {pval_coef2_title = paste0("p = ", pval_explVar2)}
+
+coef_pval_explVar1_title <- TeX(paste0("$\\beta$ = ", coef_explVar1, "; ", pval_coef1_title))
+coef_pval_explVar2_title <- TeX(paste0("$\\beta$ = ", coef_explVar2, "; ", pval_coef2_title))
+
+if(coef_explVar1 == 0.00083) {coef_pval_explVar1_title <- TeX(paste0("$\\beta$ = 8.3 x 10^{-4}; ", pval_coef1_title))}
+if(coef_explVar2 == 7.1e-05) {coef_pval_explVar2_title <- TeX(paste0("$\\beta$ = 7.1 x 10^{-5}; ", pval_coef2_title))}
+
+# R2m for plotting
+partial_R2m_absInStr_num <- signif(partial_R2m_absInStr[1], 2)
+partial_R2m_absOutStr_num <- signif(partial_R2m_absOutStr[1], 2)
+R2m_absInStr_text <- TeX(paste0("partial R^{2}_m = ", round(partial_R2m_absInStr_num, 3)))
+R2m_absOutStr_text <- TeX(paste0("partial R^{2}_m = ", partial_R2m_absOutStr_num))
+if(partial_R2m_absOutStr_num == 1.7e-05){R2m_absOutStr_text <- TeX(paste0("partial R^{2}_m = 1.7 x 10^{-5}"))}
+
+plot_relDeltaVar_absInStr_neu <- ggplot(neutrResults, aes(x = absInStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  #geom_abline(slope = lmeModel$coefficients[1]$fixed[2], 
+  #          intercept = lmeModel$coefficients[1]$fixed[1],
+  #          color = "black", linetype = "dashed", size = 1.5) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=12, face="bold"),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  labs(x = "Instrength (sqrt)", y = expression(bold("Rel."~Delta~"expr. variance (transf.)")), 
+       title = coef_pval_explVar1_title,
+       subtitle = R2m_absInStr_text) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  annotate('text', x = 0.1, y = 1.4, label = MI_obs_explVar1_title_with_pval, parse = TRUE, size = 4, hjust = 0) +
+  ylim(0, 1.5)
+plot_relDeltaVar_absOutStr_neu <- ggplot(neutrResults, aes(x = absOutStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  #geom_abline(slope = lmeModel$coefficients[1]$fixed[3], 
+  #          intercept = lmeModel$coefficients[1]$fixed[1],
+  #          color = "black", linetype = "dashed", size = 1.5) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=12, face="bold"),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  labs(x = "Outstrength (sqrt)", y = expression(bold("Rel."~Delta~"expr. variance (transf.)")), 
+         title = coef_pval_explVar2_title,
+         subtitle = R2m_absOutStr_text) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  annotate('text', x = 0.1, y = 1.4, label = MI_obs_explVar2_title_with_pval, parse = TRUE, size = 4, hjust = 0) +
+  ylim(0, 1.5)
+ggsave(filename = sprintf("plot_relDeltaVar_absInStr_neu.png"),
+       path = plotsFolder,
+       plot = plot_relDeltaVar_absInStr_neu,
+       device = "png", scale = 1.5, width = 7, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+ggsave(filename = sprintf("plot_relDeltaVar_absOutStr_neu.png"),
+       path = plotsFolder,
+       plot = plot_relDeltaVar_absOutStr_neu,
+       device = "png", scale = 1.5, width = 7, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+
+plot_constVar_neu <- ggplot(data = data.frame("Fitted_values" = fitted(lmeModel),
+                                   "Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                            aes(x = Fitted_values, y = Pearsons_residuals)) +
+                            geom_point(alpha = 0.1, size = 0.1) + 
+                            theme_bw() +
+                            theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                                  axis.title.x = element_text(size=8, face="bold"),
+                                  axis.title.y = element_text(size=8, face="bold"),
+                                  axis.text.x = element_text(size=6, face="bold"),
+                                  axis.text.y = element_text(size=6, face="bold")) +
+                            labs(x = "Fitted values", y = "Pearson's residuals",
+                                 title = "Model: Const. var.") +
+                            annotate("label", x = 0.2, y = -11, label = "Neutrality", size = 3) +
+                            xlim(min(sqrt(allNetsResults$relDeltaVar_10000 + 1), na.rm = t), 1.05) +
+                            ylim(-13,13)
+plot_constVar_neu_inset <- ggplot(data = data.frame("Fitted_values" = fitted(lmeModel),
+                                   "Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                            aes(x = Fitted_values, y = Pearsons_residuals)) +
+                            geom_point(alpha = 0.1, size = 0.1) + 
+                            theme_bw() +
+                            theme(axis.title.x = element_blank(),
+                                  axis.title.y = element_blank(),
+                                  axis.text.x = element_text(size = 4, face="bold"),
+                                  axis.text.y = element_text(size = 4, face="bold"),
+                                  plot.background = element_rect(colour = "black"))
+
+plot_constVar_resid_neu <- plot_constVar_neu + annotation_custom(ggplotGrob(plot_constVar_neu_inset),
+                                                           xmin = 0, xmax = 0.9, 
+                                                           ymin = -8, ymax = 13)
+
+plot_constVar_qqResid_neu <- ggplot(data = data.frame("Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                                aes(sample = Pearsons_residuals)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "Theoretical quantiles", y = "Sample quantiles",
+                             title = "")
+plot_constVar_qqRanef_neu <- ggplot(data = data.frame(randomEffects = unlist(random.effects(lmeModel))),
+                                aes(sample = randomEffects)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "Theoretical quantiles", y = "Sample quantiles",
+                             title = "")
+
+grid.arrange(plot_relDeltaVar_absInStr_neu, plot_relDeltaVar_absOutStr_neu, ncol = 2)
+```
+
+# Evolution of phenotypes (selection)
+## Mutual Information
+
+```{r mi-permutations-sel}
+# observed MI
+obs_MI_absInStrT_sqrt <- calcInformation(selResults$relDeltaVar_10000, 
+                                         selResults$absInStrT_sqrt, binNum)
+obs_MI_absOutStrT_sqrt <- calcInformation(selResults$relDeltaVar_10000, 
+                                          selResults$absOutStrT_sqrt, binNum)
+
+# create MI null distributions from permutations
+MI_nullDistr_absInStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+MI_nullDistr_absOutStrT_sqrt <- vector(mode = "numeric", length = numPermutations)
+
+for(permNum in 1:numPermutations)
+{
+  MI_nullDistr_absInStrT_sqrt[permNum] <- 
+    calcInformation(selResults$relDeltaVar_10000, 
+                    sample(selResults$absInStrT_sqrt, 
+                           size = length(selResults$absInStrT_sqrt)),
+                    binNum)
+  MI_nullDistr_absOutStrT_sqrt[permNum] <- 
+    calcInformation(selResults$relDeltaVar_10000, 
+                    sample(selResults$absOutStrT_sqrt, 
+                           size = length(selResults$absOutStrT_sqrt)),
+                    binNum)
+}
+
+# pvals for observed MI and R 
+pval_MI_absInStrT <- 
+  (length(which(MI_nullDistr_absInStrT_sqrt > obs_MI_absInStrT_sqrt)) + 1)/numPermutations
+pval_MI_absOutStrT <-
+  (length(which(MI_nullDistr_absOutStrT_sqrt > obs_MI_absOutStrT_sqrt)) + 1)/numPermutations
+
+# title
+if(pval_MI_absInStrT == 1e-04) {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_absInStrT_sqrt, digits = 2), "; p $\\leq$ 10^{-4}"))
+} else {
+  MI_obs_explVar1_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_absInStrT_sqrt, digits = 2), "; p = ",  pval_MI_absInStrT))
+}
+
+if(pval_MI_absOutStrT == 1e-04) {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_absOutStrT_sqrt, digits = 2), "; p $\\leq$ 10^{-4}"))
+} else {
+  MI_obs_explVar2_title_with_pval <- 
+  TeX(paste0("$\\MI$ = ", round(obs_MI_absOutStrT_sqrt, digits = 2), "; p = ",  pval_MI_absOutStrT))
+}
+
+# write MI and p values to text file
+sink(paste0("../results/", resultsFolder, "/infoMeasures_relDeltaVar-centralityMetrics-selection.txt"))
+cat(paste0("Variables: relDeltaVar_10000; absInStrT_sqrt\n",
+    "Observed MI: ", obs_MI_absInStrT_sqrt, "; pval: ", pval_MI_absInStrT, "\n", 
+    "Variables: relDeltaVar_10000; absOutStrT_sqrt\n",
+    "Observed MI: ", obs_MI_absOutStrT_sqrt, "; pval: ", pval_MI_absOutStrT, "\n"))
+sink()
+
+plot_hist_MI_obs_in <- ggplot(data = data.frame(MI = MI_nullDistr_absInStrT_sqrt), aes(x = MI)) +
+  geom_histogram(fill = MIColor, color = MIColor, bins = 50, alpha = 0.5) +
+  geom_vline(xintercept = obs_MI_absInStrT_sqrt, col = MIColor, lwd = 1, lty = 2) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  labs(x = expression(paste(bold("Mutual Information (Instrength)"))), y = "count",
+       title = MI_obs_explVar1_title_with_pval) +
+  annotate('text', x = obs_MI_absInStrT_sqrt, y = Inf, label = "obs", parse = TRUE, size = 4, vjust = 3, hjust = 1.5)
+plot_hist_MI_obs_in
+ggsave(filename = sprintf("plot_hist_MI_obs_in_sel.png"),
+       path = plotsFolder,
+       plot = plot_hist_MI_obs_in, 
+       device = "png", scale = 2, width = 6, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+plot_hist_MI_obs_out <- ggplot(data = data.frame(MI = MI_nullDistr_absOutStrT_sqrt), aes(x = MI)) +
+  geom_histogram(fill = MIColor, color = MIColor, bins = 50, alpha = 0.5) +
+  geom_vline(xintercept = obs_MI_absOutStrT_sqrt, col = MIColor, lwd = 1, lty = 2) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold", hjust = 0.5),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold")) +
+  labs(x = expression(paste(bold("Mutual Information (Outstrength)"))), y = "count",
+       title = MI_obs_explVar2_title_with_pval) +
+  annotate('text', x = obs_MI_absOutStrT_sqrt, y = Inf, label = "obs", parse = TRUE, size = 4, vjust = 3, hjust = 1.5)
+plot_hist_MI_obs_out
+ggsave(filename = sprintf("plot_hist_MI_obs_out_sel.png"),
+       path = plotsFolder,
+       plot = plot_hist_MI_obs_out, 
+       device = "png", scale = 2, width = 6, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+```
+
+## Linear mixed-effects model
+### Fit with different variance weighting functions
+
+```{r preview-plots-sel}
+yMax <- max(c(max(sqrt(selResults$relDeltaVar_10000 + 1), na.rm = T), max(sqrt(neutrResults$relDeltaVar_10000 + 1), na.rm = T)))
+plot_relDeltaVar_absInStr_sel <- ggplot(selResults, aes(x = absInStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  labs(x = "Instrength (sqrt)",
+       y = expression(bold("Rel."~Delta~"expr. variance (transf.)"))) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  ylim(0, 1.5)
+plot_relDeltaVar_absOutStr_sel <- ggplot(selResults, aes(x = absOutStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=16, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  labs(x = "Outstrength (sqrt)",
+       y = expression(bold("Rel."~Delta~"expr. variance (transf.)"))) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  ylim(0, 1.5)
+
+grid.arrange(plot_relDeltaVar_absInStr_sel, plot_relDeltaVar_absOutStr_sel, ncol = 2)
+```
+
+```{r make-summary-table}
+selResultsNoNA <- selResults[!is.na(selResults$relDeltaVar_10000), ]
+modelsSummaries <- data.frame()
+```
+
+```{r box-cox-transform}
+# transform
+normtest <- function(model) {
+  return(shapiro.test(sample(resid(model), 5000)))
+}
+indeptest <- function(model) {
+  return(Box.test(resid(model)[order(fitted(model))], type = "Ljung-Box"))
+}
+
+summary(p1 <- powerTransform(relDeltaVar_10000 ~ absInStr + absOutStr,
+                             selResultsNoNA,
+                             family = "bcnPower"))
+selResultsNoNA$relDeltaVar_10000_BC <- bcnPower(selResultsNoNA$relDeltaVar_10000, lambda = p1$lambda, gamma = p1$gamma)
+```
+
+```{r model-fit-const-variance-sel}
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                data = selResultsNoNA,
+                random = ~1|net,
+                control = lmeControl(opt = "optim"))
+normtest(lmeModel)
+indeptest(lmeModel)
+modelsSummaries <- rbind(modelsSummaries,
+                         cbind("Model" = "const. var.",
+                               "Predictors" = rownames(summary(lmeModel)$tTable),
+                               data.frame(summary(lmeModel)$tTable, row.names = NULL),
+                               "AIC" = summary(lmeModel)$AIC))
+plot_constVar_resid <- ggplot(data = data.frame("Fitted_values" = fitted(lmeModel),
+                               "Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                        aes(x = Fitted_values, y = Pearsons_residuals)) +
+                        geom_point(alpha = 0.1, size = 0.1) + 
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "", y = "Pearson's residuals",
+                             title = "Model: Const. var.") +
+                        annotate("label", x = 0.2, y = -11, label = "Selection", size = 3) +
+                        xlim(min(sqrt(allNetsResults$relDeltaVar_10000 + 1), na.rm = t), 1.05) +
+                        ylim(-13,13)
+plot_constVar_qqResid <- ggplot(data = data.frame("Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                                aes(sample = Pearsons_residuals)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "", y = "Sample quantiles",
+                             title = "Normal Q-Q plot, residuals")
+plot_constVar_qqRanef <- ggplot(data = data.frame(randomEffects = unlist(random.effects(lmeModel))),
+                                aes(sample = randomEffects)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "", y = "Sample quantiles",
+                             title = "Normal Q-Q plot, random effects")
+```
+
+```{r model-fit-power-variance-in-out-sel}
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                data = selResultsNoNA,
+                weights = varPower(form = ~absInStrT_sqrt + absOutStrT_sqrt),
+                random = ~1|net) 
+normtest(lmeModel)
+indeptest(lmeModel)
+modelsSummaries <- rbind(modelsSummaries,
+                         cbind("Model" = "power var., in + out",
+                               "Predictors" = rownames(summary(lmeModel)$tTable),
+                               data.frame(summary(lmeModel)$tTable, row.names = NULL),
+                               "AIC" = summary(lmeModel)$AIC))
+plot_varPow_InOut_resid <- ggplot(data = data.frame("Fitted_values" = fitted(lmeModel),
+                                   "Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                            aes(x = Fitted_values, y = Pearsons_residuals)) +
+                            geom_point(alpha = 0.1, size = 0.1) + 
+                            theme_bw() +
+                            theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                                  axis.title.x = element_text(size=8, face="bold"),
+                                  axis.title.y = element_text(size=8, face="bold"),
+                                  axis.text.x = element_text(size=6, face="bold"),
+                                  axis.text.y = element_text(size=6, face="bold")) + 
+                            labs(x = "", y = "Pearson's residuals",
+                                 title = "Model: Power var., in + out") +
+                        annotate("label", x = 0.2, y = -11, label = "Selection", size = 3) +
+                        xlim(min(sqrt(allNetsResults$relDeltaVar_10000 + 1), na.rm = t), 1.05) +
+                        ylim(-13,13)
+plot_varPow_InOut_qqResid <- ggplot(data = data.frame("Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                                aes(sample = Pearsons_residuals)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "", y = "Sample quantiles",
+                             title = "")
+plot_varPow_InOut_qqRanef <- ggplot(data = data.frame(randomEffects = unlist(random.effects(lmeModel))),
+                                aes(sample = randomEffects)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "", y = "Sample quantiles",
+                             title = "")
+```
+
+```{r model-fit-exp-variance-in-sel}
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                data = selResultsNoNA,
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net)
+normtest(lmeModel)
+indeptest(lmeModel)
+modelsSummaries <- rbind(modelsSummaries,
+                         cbind("Model" = "exp. var., in",
+                               "Predictors" = rownames(summary(lmeModel)$tTable),
+                               data.frame(summary(lmeModel)$tTable, row.names = NULL),
+                               "AIC" = summary(lmeModel)$AIC))
+plot_varExp_In_resid <- ggplot(data = data.frame("Fitted_values" = fitted(lmeModel),
+                                   "Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                            aes(x = Fitted_values, y = Pearsons_residuals)) +
+                            geom_point(alpha = 0.1, size = 0.1) + 
+                            theme_bw() +
+                            theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                                  axis.title.x = element_text(size=8, face="bold"),
+                                  axis.title.y = element_text(size=8, face="bold"),
+                                  axis.text.x = element_text(size=6, face="bold"),
+                                  axis.text.y = element_text(size=6, face="bold")) +
+                            labs(x = "", y = "Pearson's residuals",
+                                 title = "Model: Exp. var., instrength") +
+                        annotate("label", x = 0.2, y = -11, label = "Selection", size = 3) +
+                        xlim(min(sqrt(allNetsResults$relDeltaVar_10000 + 1), na.rm = t), 1.05) +
+                        ylim(-13,13)
+plot_varExp_In_qqResid <- ggplot(data = data.frame("Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                                aes(sample = Pearsons_residuals)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "", y = "Sample quantiles",
+                             title = "")
+plot_varExp_In_qqRanef <- ggplot(data = data.frame(randomEffects = unlist(random.effects(lmeModel))),
+                                aes(sample = randomEffects)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "", y = "Sample quantiles",
+                             title = "")
+```
+
+```{r model-fit-exp-variance-out-sel}
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                data = selResultsNoNA,
+                weights = varExp(form = ~absOutStrT_sqrt),
+                random = ~1|net,
+                control = lmeControl(opt = "optim"))
+normtest(lmeModel)
+indeptest(lmeModel)
+modelsSummaries <- rbind(modelsSummaries,
+                         cbind("Model" = "exp. var., out",
+                               "Predictors" = rownames(summary(lmeModel)$tTable),
+                               data.frame(summary(lmeModel)$tTable, row.names = NULL),
+                               "AIC" = summary(lmeModel)$AIC))
+plot_varExp_Out_resid <- ggplot(data = data.frame("Fitted_values" = fitted(lmeModel),
+                                   "Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                            aes(x = Fitted_values, y = Pearsons_residuals)) +
+                            geom_point(alpha = 0.1, size = 0.1) + 
+                            theme_bw() +
+                            theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                                  axis.title.x = element_text(size=8, face="bold"),
+                                  axis.title.y = element_text(size=8, face="bold"),
+                                  axis.text.x = element_text(size=6, face="bold"),
+                                  axis.text.y = element_text(size=6, face="bold")) +
+                            labs(x = "", y = "Pearson's residuals",
+                                 title = "Model: Exp. var., outstrength") +
+                        annotate("label", x = 0.2, y = -11, label = "Selection", size = 3) +
+                        xlim(min(sqrt(allNetsResults$relDeltaVar_10000 + 1), na.rm = t), 1.05) +
+                        ylim(-13,13)
+plot_varExp_Out_qqResid <- ggplot(data = data.frame("Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                                aes(sample = Pearsons_residuals)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "", y = "Sample quantiles",
+                             title = "")
+plot_varExp_Out_qqRanef <- ggplot(data = data.frame(randomEffects = unlist(random.effects(lmeModel))),
+                                aes(sample = randomEffects)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "", y = "Sample quantiles",
+                             title = "")
+```
+
+```{r model-fit-exp-variance-in-out-sel}
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                data = selResultsNoNA,
+                weights = varExp(form = ~absInStrT_sqrt + absOutStrT_sqrt),
+                random = ~1|net)
+normtest(lmeModel)
+indeptest(lmeModel)
+modelsSummaries <- rbind(modelsSummaries,
+                         cbind("Model" = "exp. var., in + out",
+                               "Predictors" = rownames(summary(lmeModel)$tTable),
+                               data.frame(summary(lmeModel)$tTable, row.names = NULL),
+                               "AIC" = summary(lmeModel)$AIC))
+plot_varExp_InOut_resid <- ggplot(data = data.frame("Fitted_values" = fitted(lmeModel),
+                                   "Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                            aes(x = Fitted_values, y = Pearsons_residuals)) +
+                            geom_point(alpha = 0.1, size = 0.1) + 
+                            theme_bw() +
+                            theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                                  axis.title.x = element_text(size=8, face="bold"),
+                                  axis.title.y = element_text(size=8, face="bold"),
+                                  axis.text.x = element_text(size=6, face="bold"),
+                                  axis.text.y = element_text(size=6, face="bold")) +
+                            labs(x = "Fitted values",
+                                 y = "Pearson's residuals",
+                                 title = "Model: Exp. var., in + out") +
+                        annotate("label", x = 0.2, y = -11, label = "Selection", size = 3) +
+                        xlim(min(sqrt(allNetsResults$relDeltaVar_10000 + 1), na.rm = t), 1.05) +
+                        ylim(-13,13)
+plot_varExp_InOut_qqResid <- ggplot(data = data.frame("Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                                aes(sample = Pearsons_residuals)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "", y = "Sample quantiles",
+                             title = "")
+plot_varExp_InOut_qqRanef <- ggplot(data = data.frame(randomEffects = unlist(random.effects(lmeModel))),
+                                aes(sample = randomEffects)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "", y = "Sample quantiles",
+                             title = "")
+```
+
+```{r model-fit-exp-variance-in-out-sel-box-cox}
+lmeModel <- lme(relDeltaVar_10000_BC ~ absInStr + absOutStr, 
+                data = selResultsNoNA,
+                weights = varExp(form = ~absInStr + absOutStr),
+                random = ~1|net)
+normtest(lmeModel)
+indeptest(lmeModel)
+modelsSummaries <- rbind(modelsSummaries,
+                         cbind("Model" = "exp. var., in + out, BC",
+                               "Predictors" = rownames(summary(lmeModel)$tTable),
+                               data.frame(summary(lmeModel)$tTable, row.names = NULL),
+                               "AIC" = summary(lmeModel)$AIC))
+plot_varExp_InOut_resid_BC <- ggplot(data = data.frame("Fitted_values" = fitted(lmeModel),
+                                   "Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                            aes(x = Fitted_values, y = Pearsons_residuals)) +
+                            geom_point(alpha = 0.1, size = 0.1) + 
+                            theme_bw() +
+                            theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                                  axis.title.x = element_text(size=8, face="bold"),
+                                  axis.title.y = element_text(size=8, face="bold"),
+                                  axis.text.x = element_text(size=6, face="bold"),
+                                  axis.text.y = element_text(size=6, face="bold")) +
+                            labs(x = "Fitted values",
+                                 y = "Pearson's residuals",
+                                 title = "Model: Exp. var., in + out; Box-Cox") +
+                        annotate("label", x = -1.8e+6, y = -5, label = "Selection", size = 3)
+plot_varExp_InOut_qqResid_BC <- ggplot(data = data.frame("Pearsons_residuals" = resid(lmeModel, type = "pearson")),
+                                aes(sample = Pearsons_residuals)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "", y = "Sample quantiles",
+                             title = "")
+plot_varExp_InOut_qqRanef_BC <- ggplot(data = data.frame(randomEffects = unlist(random.effects(lmeModel))),
+                                aes(sample = randomEffects)) +
+                          stat_qq(alpha = 0.1, size = 0.2) + stat_qq_line() +
+                        theme_bw() +
+                        theme(plot.title = element_text(size=8, face="bold", hjust = 0.5),
+                              axis.title.x = element_text(size=8, face="bold"),
+                              axis.title.y = element_text(size=8, face="bold"),
+                              axis.text.x = element_text(size=6, face="bold"),
+                              axis.text.y = element_text(size=6, face="bold")) +
+                        labs(x = "", y = "Sample quantiles",
+                             title = "")
+```
+
+### Model selection
+
+```{r select-model}
+modelsSummaries$p.significant <- modelsSummaries$p.value < 0.05
+modelsSummaries <- modelsSummaries[, c(1:7, 9, 8)]
+modelsSummaries <- modelsSummaries[-c(16:18), ]
+modelsSummaries
+export_formattable <- function(f, file, width = "100%", height = NULL, 
+                               background = "white", delay = 0.2)
+    {
+      w <- as.htmlwidget(f, width = width, height = height)
+      path <- html_print(w, background = background, viewer = NULL)
+      url <- paste0("file:///", gsub("\\\\", "/", normalizePath(path)))
+      webshot(url,
+              file = file,
+              selector = ".formattable_widget",
+              delay = delay)
+    }
+prettyTable <- formattable(modelsSummaries,
+                           align =c("l","c","c","c","c", "c", "c", "c", "c"),
+                           list(
+                           `Model` = formatter("span",
+                                          x ~ icontext(ifelse(x == "exp. var., in", "star", ""), x)),
+                           `AIC` = color_tile(customGreenAIC, 'white'),
+                           `p.significant` = formatter("span", 
+                                              x ~ icontext(ifelse(x > 0, "ok", "remove"), ifelse(x > 0, "Yes", "No")),
+                                              style = x ~ style(color = ifelse(x < 0, "red", "green")))
+                          )) 
+
+export_formattable(prettyTable, paste0(plotsFolder, "/SI_ModelVariancesTable.png"))
+plot_ModelDiagnostics <- ggarrange(plot_constVar_resid, plot_constVar_qqResid, plot_constVar_qqRanef,
+                                   plot_varPow_InOut_resid, plot_varPow_InOut_qqResid, plot_varPow_InOut_qqRanef,
+                                   plot_varExp_In_resid, plot_varExp_In_qqResid, plot_varExp_In_qqRanef,
+                                   plot_varExp_Out_resid, plot_varExp_Out_qqResid, plot_varExp_Out_qqRanef,
+                                   plot_varExp_InOut_resid, plot_varExp_InOut_qqResid, plot_varExp_InOut_qqRanef,
+                                   plot_varExp_InOut_resid_BC, plot_varExp_InOut_qqResid_BC, plot_varExp_InOut_qqRanef_BC,
+                                   plot_constVar_resid_neu, plot_constVar_qqResid_neu, plot_constVar_qqRanef_neu,
+                                   ncol = 3, nrow = 7,
+                                   labels = "AUTO",
+                                   font.label = list(size = 12))
+# save to plots folder
+ggsave(filename = sprintf("plot_ModelDiagnostics_evolPhenotypes.png"),
+       path = plotsFolder,
+       plot = plot_ModelDiagnostics, 
+       device = "png", scale = 1.5, width = 15, height = 20, units = "cm",
+       dpi = 300, limitsize = TRUE,
+       bg = "white")
+```
+
+```{r calc-partial-R2-sel}
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                data = selResultsNoNA,
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net,
+                method = "ML") 
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+
+lmeModel_null_absInStr <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt, 
+                data = selResultsNoNA,
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net,
+                method = "ML") 
+lmeModel_null_absOutStr <- lme(sqrt(relDeltaVar_10000 + 1) ~ absOutStrT_sqrt, 
+                data = selResultsNoNA,
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net,
+                method = "ML") 
+
+# partical R^2_{m} for instrength
+partial_R2m_absInStr <- r.squaredLR(lmeModel, null = lmeModel_null_absOutStr)
+
+# partical R^2_{m} for outstrength
+partial_R2m_absOutStr <- r.squaredLR(lmeModel, null = lmeModel_null_absInStr)
+```
+
+
+```{r plot-selected-model-predictions-sel}
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt + absOutStrT_sqrt, 
+                data = selResultsNoNA,
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net,
+                method = "ML") 
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+print("VIF:")
+vif(lmeModel)
+
+# get fitted coefficients from the model fit
+coef_explVar1 <- signif(summary(lmeModel)$tTable[2, 1], 2)
+coef_explVar2 <- signif(summary(lmeModel)$tTable[3, 1], 2)
+
+# get p values from the model fit
+pval_explVar1 <- signif(summary(lmeModel)$tTable[2, 5], 2)
+pval_explVar2 <- signif(summary(lmeModel)$tTable[3, 5], 2)
+
+# double check that the p values are zero before renaming them
+if(summary(lmeModel)$tTable[2, 5] < 2.2e-16){pval_coef1_title = "p < 2.2 x 10^{-16}"} else
+  {pval_coef1_title = paste0("p = ", pval_explVar1)}
+if(summary(lmeModel)$tTable[3, 5] < 2.2e-16){pval_coef2_title = "p < 2.2 x 10^{-16}"} else 
+  {pval_coef2_title = paste0("p = ", pval_explVar2)}
+
+if(pval_explVar1 == 2.9e-10){pval_coef1_title = "p = 2.9 x 10^{-10}"} 
+
+coef_pval_explVar1_title <- TeX(paste0("$\\beta$ = ", round(coef_explVar1, 3), "; ", pval_coef1_title))
+coef_pval_explVar2_title <- TeX(paste0("$\\beta$ = ", coef_explVar2, "; ", pval_coef2_title))
+
+# R2m for plotting
+partial_R2m_absInStr_num <- signif(partial_R2m_absInStr[1], 2)
+partial_R2m_absOutStr_num <- signif(partial_R2m_absOutStr[1], 2)
+
+R2m_absInStr_text <- TeX(paste0("partial R^{2}_m = ", partial_R2m_absInStr_num))
+R2m_absOutStr_text <- TeX(paste0("partial R^{2}_m = ", partial_R2m_absOutStr_num))
+
+if(partial_R2m_absInStr_num == 0.00052){R2m_absInStr_text <- TeX(paste0("partial R^{2}_m = 5.2 x 10^{-4}"))} 
+
+plot_relDeltaVar_absInStr_sel <- ggplot(selResults, aes(x = absInStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  geom_quantile(quantiles = c(.5), color = noiseColor, size = 0.75) +
+  geom_quantile(quantiles = c(.25, .75), color = noiseColor, size = 0.5, linetype = 2) +
+  #geom_abline(slope = lmeModel$coefficients[1]$fixed[2], 
+  #            intercept = lmeModel$coefficients[1]$fixed[1],
+  #            color = "black", linetype = "dashed", size = 1) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=12, face="bold"),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  labs(x = "Instrength (sqrt)", y = expression(bold("Rel."~Delta~"expr. variance (transf.)")), 
+       title = coef_pval_explVar1_title,
+       subtitle = R2m_absInStr_text) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  annotate('text', x = 0, y = 1.4, label = MI_obs_explVar1_title_with_pval, parse = TRUE, size = 4, hjust = 0) +
+  ylim(0, 1.5)
+plot_relDeltaVar_absOutStr_sel <- ggplot(selResults, aes(x = absOutStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  geom_quantile(quantiles = c(.5), color = noiseColor, size = 0.75) +
+  geom_quantile(quantiles = c(.25, .75), color = noiseColor, size = 0.5, linetype = 2) + 
+  #geom_abline(slope = lmeModel$coefficients[1]$fixed[3], 
+  #            intercept = lmeModel$coefficients[1]$fixed[1],
+  #            color = "black", linetype = "dashed", size = 1) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=12, face="bold"),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+    labs(x = "Outstrength (sqrt)", y = expression(bold("Rel."~Delta~"expr. variance (transf.)")), 
+         title = coef_pval_explVar2_title,
+         subtitle = R2m_absOutStr_text) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  annotate('text', x = 0, y = 1.4, label = MI_obs_explVar2_title_with_pval, parse = TRUE, size = 4, hjust = 0) +
+  ylim(0, 1.5)
+ggsave(filename = sprintf("plot_relDeltaVar_absInStr_sel.png"),
+       path = plotsFolder,
+       plot = plot_relDeltaVar_absInStr_sel, 
+       device = "png", scale = 1.5, width = 7, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+ggsave(filename = sprintf("plot_relDeltaVar_absOutStr_sel.png"),
+       path = plotsFolder,
+       plot = plot_relDeltaVar_absOutStr_sel, 
+       device = "png", scale = 1.5, width = 7, height = 6, units = "cm",
+       dpi = 300, limitsize = TRUE)
+
+grid.arrange(plot_relDeltaVar_absInStr_sel, plot_relDeltaVar_absOutStr_sel, ncol = 2)
+```
+
+
+# Final plot
+
+```{r final-combined-plot}
+jointTitle_sel <- ggdraw() + draw_label("Selection",
+                                        size = 20,
+                                        fontface = 'bold')
+jointTitle_neu <- ggdraw() + draw_label("Neutrality", 
+                                        size = 20,
+                                        fontface = 'bold')
+jointTitle_combined <- plot_grid(NULL, jointTitle_sel, NULL,
+                                 NULL, jointTitle_neu, NULL,
+                                 labels = c("", "", "", "", "", ""),
+                                 ncol = 6,
+                                 rel_widths = c(0.5, 1, 0.5, 0.5, 1, 0.5))
+
+plot_evolPhenotypesFigure_part1 <- plot_grid(plot_relDeltaVar_absInStr_sel,
+                                             plot_relDeltaVar_absOutStr_sel,
+                                             plot_relDeltaVar_absInStr_neu,
+                                             plot_relDeltaVar_absOutStr_neu,
+                                             scale = c(0.95, 0.95, 0.95, 0.95),
+                                             labels = c("A", "B", "C", "D"),
+                                             label_size = 20,
+                                             label_fontface = "bold",
+                                             ncol = 4)
+
+plot_evolPhenotypesFigure <- plot_grid(jointTitle_combined,
+                                       plot_evolPhenotypesFigure_part1,
+                                       ncol = 1,
+                                       rel_heights = c(0.1, 1))
+
+ggsave(filename = sprintf("plot_evolPhenotypesFigure.png"),
+       plot = plot_evolPhenotypesFigure, 
+       bg = "white",
+       path = plotsFolder, 
+       device = "png", 
+       scale = 2, height = 700, width = 2250, units = "px",
+       dpi = 300, limitsize = TRUE)
+ggsave(filename = sprintf("plot_evolPhenotypesFigure.tiff"),
+       plot = plot_evolPhenotypesFigure, 
+       bg = "white",
+       path = plotsFolder, 
+       device = "tiff", 
+       scale = 2, height = 700, width = 2250, units = "px",
+       dpi = 300, limitsize = TRUE)
+```
+
+ 
+```{r}
+min(selResults$absInStrT_sqrt)
+max(selResults$absInStrT_sqrt)
+min(selResults$absOutStrT_sqrt)
+max(selResults$absOutStrT_sqrt)
+
+selResults$absInStr_cat <- cut(selResults$absInStrT_sqrt, breaks = c(-1, 0 , 1, 2, 3, 4, 5))
+levels(selResults$absInStr_cat)[1] <- "0"
+selResults$absOutStr_cat <- cut(selResults$absOutStrT_sqrt, breaks = c(-1, 0, 1, 2, 3, 4, 5))
+levels(selResults$absOutStr_cat)[1] <- "0"
+
+length(which(selResults$absInStr_cat == 0)) # there are 14k with 0 instrength (pure regulators)
+length(which(selResults$absOutStr_cat == 0)) # there are 11k with 0 outstrength (pure regulated)
+
+justRegulators <- selResults[selResults$absInStr_cat == 0, ]
+justRegulated <- selResults[selResults$absOutStr_cat == 0, ]
+```
+
+```{r effects-stratified}
+plot_absInStr_strat <- ggplot(selResults, aes(x = absInStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  theme_pubclean() + 
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        plot.title = element_text(size=16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+    labs(x = "Instrength (sqrt)", y = expression(bold("Rel."~Delta~"expr. variance (transf.)")),
+       subtitle = "stratified by absOutstrength") +
+  ylim(0,1) +
+  facet_wrap(~absOutStr_cat, nrow = 2)
+plot_absInStr_strat
+
+plot_absOutStr_strat <- ggplot(selResults, aes(x = absOutStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  theme_pubclean() + 
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        plot.title = element_text(size=16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+    labs(x = "Outstrength (sqrt)", y = expression(bold("Rel."~Delta~"expr. variance (transf.)")), 
+       subtitle = "stratified by absInstrength") +
+  ylim(0,1) +
+  facet_wrap(~absInStr_cat, nrow = 2)
+plot_absOutStr_strat
+```
+
+
+```{r stratified-data-lme}
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absInStrT_sqrt, 
+                data = justRegulated[!is.na(justRegulated$relDeltaVar_10000), ],
+                weights = varExp(form = ~absInStrT_sqrt),
+                random = ~1|net, na.action=na.exclude,
+                method = "ML") 
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+
+# get fitted coefficients from the model fit
+coef_explVar1 <- signif(summary(lmeModel)$tTable[2, 1], 2)
+
+# get p values from the model fit
+pval_explVar1 <- signif(summary(lmeModel)$tTable[2, 5], 2)
+
+# double check that the p values are zero before renaming them
+if(pval_explVar1 == 0){pval_coef1_title = "p < 2.2e-16"} else
+  {pval_coef1_title = paste0("p = ", pval_explVar1)}
+
+coef_pval_explVar1_title <- TeX(paste0("$\\beta$ = ", coef_explVar1, "; ", pval_coef1_title))
+
+# R2m for plotting
+R2m_absInStr_num <- signif(r.squaredGLMM(lmeModel)[1], 2)
+R2m_absInStr_text <- TeX(paste0("R^{2}_m = ", R2m_absInStr_num))
+
+plot_relDeltaVar_absInStr_sel <- ggplot(justRegulated[!is.na(justRegulated$relDeltaVar_10000), ],
+                                        aes(x = absInStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  geom_abline(slope = lmeModel$coefficients[1]$fixed[2], 
+              intercept = lmeModel$coefficients[1]$fixed[1],
+              color = "black", linetype = "dashed", size = 1) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=12, face="bold"),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  labs(x = "Instrength (sqrt)", y = expression(bold("Rel."~Delta~"expr. variance (transf.)")), 
+       title = coef_pval_explVar1_title,
+       subtitle = R2m_absInStr_text) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  #annotate('text', x = 0, y = 1.4, label = MI_obs_explVar1_title_with_pval, parse = TRUE, size = 4, hjust = 0) +
+  ylim(0, 1.5)
+
+plot_relDeltaVar_absInStr_sel
+
+
+
+
+lmeModel <- lme(sqrt(relDeltaVar_10000 + 1) ~ absOutStrT_sqrt, 
+                data = justRegulators[!is.na(justRegulators$relDeltaVar_10000), ],
+                weights = varExp(form = ~absOutStrT_sqrt),
+                random = ~1|net, na.action=na.exclude,
+                method = "ML") 
+summary(lmeModel)
+r.squaredGLMM(lmeModel)
+
+# get fitted coefficients from the model fit
+coef_explVar1 <- signif(summary(lmeModel)$tTable[2, 1], 2)
+
+# get p values from the model fit
+pval_explVar1 <- signif(summary(lmeModel)$tTable[2, 5], 2)
+
+# double check that the p values are zero before renaming them
+if(pval_explVar1 == 0){pval_coef1_title = "p < 2.2e-16"} else
+  {pval_coef1_title = paste0("p = ", pval_explVar1)}
+
+coef_pval_explVar1_title <- TeX(paste0("$\\beta$ = ", coef_explVar1, "; ", pval_coef1_title))
+
+# R2m for plotting
+R2m_absOutStr_num <- signif(r.squaredGLMM(lmeModel)[1], 2)
+R2m_absOutStr_text <- TeX(paste0("R^{2}_m = ", R2m_absOutStr_num))
+
+plot_relDeltaVar_absOutStr_sel <- ggplot(justRegulators[!is.na(justRegulators$relDeltaVar_10000), ],
+                                        aes(x = absOutStrT_sqrt, y = sqrt(relDeltaVar_10000 + 1))) +
+  geom_hex(bins = 50) +
+  geom_abline(slope = lmeModel$coefficients[1]$fixed[2], 
+              intercept = lmeModel$coefficients[1]$fixed[1],
+              color = "black", linetype = "dashed", size = 1) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=12, face="bold"),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  labs(x = "Outstrength (sqrt)", y = expression(bold("Rel."~Delta~"expr. variance (transf.)")), 
+       title = coef_pval_explVar1_title,
+       subtitle = R2m_absOutStr_text) +
+  scale_fill_gradient(low = "#ACCDCA", high = noiseColor) +
+  #annotate('text', x = 0, y = 1.4, label = MI_obs_explVar1_title_with_pval, parse = TRUE, size = 4, hjust = 0) +
+  ylim(0, 1.5)
+
+plot_relDeltaVar_absOutStr_sel
+```

@@ -1,0 +1,685 @@
+---
+title: "Robustness of model realization"
+author: "Natasha Puzovic (puzovic@evolbio.mpg.de)"
+date: "Oct 12, 2021"
+output:
+  pdf_document:
+  toc: yes
+html_document:
+  df_print: paged
+number_sections: yes
+toc: yes
+---
+  
+# Read data
+Read the genotype, phenotype and fitness information of evolved populations of 200 random network topology samples.
+
+```{r read-data}
+resultsFolder = "realizationRobustness/"
+path = paste0("../results/", resultsFolder)
+
+# read params
+params <- read.table(file = paste0(path, "realizeParamsN1000.txt"), 
+                     sep = " ", header = FALSE, col.names = c("param", "val"))
+
+# add params of this sim set to results
+num_nodes = params$val[params$param == "NUM_NODES"]
+num_cells = params$val[params$param == "POP_SIZE"]
+numNets = 200
+Hamm = vector(length = numNets*num_cells, mode = "integer")
+
+for(netNum in 1:numNets){
+  st_sync <- read.table(file = paste0(path, "out.sync.sig0_net_", netNum), sep = " ", header = FALSE)
+  ave_st_sync <- as.numeric(colMeans(st_sync[21:40]))
+
+  st_async <- read.table(file = paste0(path, "out.async.sig0_net_", netNum), sep = " ", header = FALSE)
+  ave_st_async <- as.numeric(colMeans(st_async[21:40]))
+  
+  for(cellNum in 1:num_cells){
+    Hamm[(netNum-1)*num_cells + cellNum] = sum((st_sync[cellNum, 21:40] - st_async[cellNum, 21:40]) > 0.001)
+  }
+}
+
+meansVars <- data.frame(matrix(nrow = numNets*num_nodes, ncol = 10))
+colnames(meansVars) <- c("meanSync", "meanAsync", 
+                         "varSync", "varAsync", 
+                         "cvSync", "cvAsync", 
+                         "noiseSync", "noiseAsync",
+                         "fanoSync", "fanoAsync")
+
+for(netNum in 1:numNets){
+  st_sync <- read.table(file = paste0(path, "out.sync.sig10_net_", netNum), sep = " ", header = FALSE)
+  st_async <- read.table(file = paste0(path, "out.async.sig10_net_", netNum), sep = " ", header = FALSE)
+
+  meansVars[(1+(netNum-1)*num_nodes):(netNum*num_nodes), "meanSync"] <- sapply(st_sync[, 21:40], function(x) mean(x))
+  meansVars[(1+(netNum-1)*num_nodes):(netNum*num_nodes), "meanAsync"] <- sapply(st_async[, 21:40], function(x) mean(x)) 
+  
+  meansVars[(1+(netNum-1)*num_nodes):(netNum*num_nodes), "varSync"] <- sapply(st_sync[, 21:40], function(x) var(x))
+  meansVars[(1+(netNum-1)*num_nodes):(netNum*num_nodes), "varAsync"] <- sapply(st_async[, 21:40], function(x) var(x))
+  
+  meansVars[(1+(netNum-1)*num_nodes):(netNum*num_nodes), "cvSync"] <- sapply(st_sync[, 21:40], function(x) sd(x)/mean(x))
+  meansVars[(1+(netNum-1)*num_nodes):(netNum*num_nodes), "cvAsync"] <- sapply(st_async[, 21:40], function(x) sd(x)/mean(x))
+  
+  meansVars[(1+(netNum-1)*num_nodes):(netNum*num_nodes), "noiseSync"] <- sapply(st_sync[, 21:40], function(x) var(x)/(mean(x)^2))
+  meansVars[(1+(netNum-1)*num_nodes):(netNum*num_nodes), "noiseAsync"] <- sapply(st_async[, 21:40], function(x) var(x)/(mean(x)^2))
+  
+  meansVars[(1+(netNum-1)*num_nodes):(netNum*num_nodes), "fanoSync"] <- sapply(st_sync[, 21:40], function(x) var(x)/mean(x))
+  meansVars[(1+(netNum-1)*num_nodes):(netNum*num_nodes), "fanoAsync"] <- sapply(st_async[, 21:40], function(x) var(x)/mean(x))
+
+}
+
+length(which(Hamm == 0))/length(Hamm)
+
+```
+
+# Load packages & misc
+
+```{r load-packages}
+library(ggplot2)
+library(ggpubr) # for the pubclean theme
+library(reshape2)
+library(cowplot) # for arranging plots
+library(RColorBrewer) # for color palettes
+library(latex2exp) # for latex notation in the plots
+library(ggExtra) # for marginal distributions
+```
+
+```{r, setup, include=FALSE}
+plotsFolder = "../plots/SI_1"
+if (!dir.exists(plotsFolder)) {
+  dir.create(plotsFolder)
+}
+```
+
+# Robustness of network realization
+
+```{r robustness-of-expr-level-mean-and-variance}
+Hamm_df <- as.data.frame(Hamm)
+plot_Hamm_hist <- ggplot(Hamm_df, aes(x = Hamm)) +
+  geom_histogram(aes(y = stat(count) / sum(count)), binwidth = 1, color = "black", ) +
+  theme_pubclean() + 
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        plot.title = element_text(size=16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = TeX("\\textbf{$D_h(S_{sync}, S_{async})}"), y = "Percentage", subtitle = "Num nets = 200; Num realizations = 1k") +
+  scale_y_continuous(labels = scales::percent, limits = c(0,1))
+ggsave(sprintf("plot_sync_async_Hamm_hist.png"), 
+       plot = plot_Hamm_hist, 
+       path = plotsFolder,
+       device = NULL, 
+       scale = 1.7, width = 6, height = 6, units = "cm",
+       dpi = 300, limitsize = FALSE)
+
+cortest <- cor.test(meansVars$meanSync, meansVars$meanAsync, method = "pearson")
+plot_means_corr <- ggplot(meansVars, aes(x = meanSync, y = meanAsync)) +
+  geom_point(alpha = 0.1) +
+  geom_abline(slope = 1, 
+              intercept = 0,
+              color = "black", linetype = "dashed", size = 1) +
+  theme_minimal() + 
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        plot.title = element_text(size=16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Expr. mean, sync. updating", y = "Expr. mean, async. updating",
+       subtitle = paste0("Pearson's r = ", round(as.numeric(cortest[4]), digits = 3), 
+                         ", p-value < 2.2e-16"))
+ggsave(sprintf("plot_sync_async_means_corr.png"), 
+       plot = plot_means_corr, 
+       path = plotsFolder,
+       device = NULL, 
+       scale = 1.5, width = 8, height = 8, units = "cm",
+       dpi = 300, limitsize = FALSE)
+
+cortest <- cor.test(meansVars$varSync, meansVars$varAsync, method = "pearson")
+plot_vars_corr <- ggplot(meansVars, aes(x = varSync, y = varAsync)) +
+  geom_point(alpha = 0.1) +
+  geom_abline(slope = 1, 
+              intercept = 0,
+              color = "black", linetype = "dashed", size = 1) +
+  theme_minimal() + 
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        plot.title = element_text(size=16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Expr. variance, sync. updating", y = "Expr. variance, async. updating",
+       subtitle = paste0("Pearson's r = ", round(as.numeric(cortest[4]), digits = 3), 
+                         ", p-value < 2.2e-16"))
+ggsave(sprintf("plot_sync_async_vars_corr.png"), 
+       plot = plot_vars_corr,
+       path = plotsFolder,
+       device = NULL, 
+       scale = 1.5, width = 8, height = 8, units = "cm",
+       dpi = 300, limitsize = FALSE)
+
+cortest <- cor.test(meansVars$cvSync, meansVars$cvAsync, method = "pearson")
+plot_cvs_corr <- ggplot(meansVars, aes(x = cvSync, y = cvAsync)) +
+  geom_point(alpha = 0.1) +
+  geom_abline(slope = 1, 
+              intercept = 0,
+              color = "black", linetype = "dashed", size = 1) +
+  theme_minimal() + 
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        plot.title = element_text(size=16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Expr. CV, sync. updating", y = "Expr. CV, async. updating",
+       subtitle = paste0("Pearson's r = ", round(as.numeric(cortest[4]), digits = 3), 
+                         ", p-value < 2.2e-16"))
+ggsave(sprintf("plot_sync_async_cvs_corr.png"), 
+       plot = plot_cvs_corr, 
+       path = plotsFolder,
+       device = NULL, 
+       scale = 1.5, width = 8, height = 8, units = "cm",
+       dpi = 300, limitsize = FALSE)
+
+cortest <- cor.test(meansVars$noiseSync, meansVars$noiseAsync, method = "pearson")
+plot_noises_corr <- ggplot(meansVars, aes(x = noiseSync, y = noiseAsync)) +
+  geom_point(alpha = 0.1) +
+  geom_abline(slope = 1, 
+              intercept = 0,
+              color = "black", linetype = "dashed", size = 1) +
+  theme_minimal() + 
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        plot.title = element_text(size=16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Expr. noise, sync. updating", y = "Expr. noise, async. updating",
+       subtitle = paste0("Pearson's r = ", round(as.numeric(cortest[4]), digits = 3), 
+                         ", p-value < 2.2e-16"))
+ggsave(sprintf("plot_sync_async_noises_corr.png"), 
+       plot = plot_noises_corr, 
+       path = plotsFolder,
+       device = NULL, 
+       scale = 1.5, width = 8, height = 8, units = "cm",
+       dpi = 300, limitsize = FALSE)
+
+cortest <- cor.test(meansVars$noiseSync, meansVars$noiseAsync, method = "pearson")
+plot_noises_corr_interval <- ggplot(meansVars, aes(x = noiseSync, y = noiseAsync)) +
+  geom_point(alpha = 0.1) +
+  geom_abline(slope = 1, 
+              intercept = 0,
+              color = "black", linetype = "dashed", size = 1) +
+  theme_minimal() + 
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        plot.title = element_text(size=16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Expr. noise, sync. updating", y = "Expr. noise, async. updating",
+       subtitle = paste0("Pearson's r = ", round(as.numeric(cortest[4]), digits = 3), 
+                         ", p-value < 2.2e-16")) + xlim(0,1) + ylim(0,1)
+ggsave(sprintf("plot_sync_async_noises_corr_interval.png"), 
+       plot = plot_noises_corr_interval, 
+       path = plotsFolder,
+       device = NULL, 
+       scale = 1.5, width = 8, height = 8, units = "cm",
+       dpi = 300, limitsize = FALSE)
+
+cortest <- cor.test(meansVars$fanoSync, meansVars$fanoAsync, method = "pearson")
+plot_fanos_corr <- ggplot(meansVars, aes(x = fanoSync, y = fanoAsync)) +
+  geom_point(alpha = 0.1) +
+  geom_abline(slope = 1, 
+              intercept = 0,
+              color = "black", linetype = "dashed", size = 1) +
+  theme_minimal() + 
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        plot.title = element_text(size=16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Expr. Fano factor, sync. updating", y = "Expr. Fano factor, async. updating",
+       subtitle = paste0("Pearson's r = ", round(as.numeric(cortest[4]), digits = 3), 
+                         ", p-value < 2.2e-16")) + xlim(0,100) + ylim(0,100)
+ggsave(sprintf("plot_sync_async_fanos_corr.png"), 
+       plot = plot_fanos_corr, 
+       path = plotsFolder,
+       device = NULL, 
+       scale = 1.5, width = 8, height = 8, units = "cm",
+       dpi = 300, limitsize = FALSE)
+```
+
+```{r combine-plots-of-robustness-of-expr-level-mean-and-variance}
+plot_mean_vars_combined <- plot_grid(plot_Hamm_hist,
+                        plot_means_corr,
+                        plot_vars_corr,
+                        plot_cvs_corr,
+                        plot_noises_corr,
+                        plot_fanos_corr,
+                        scale = c(0.90, 0.90, 0.90, 0.90),
+                        labels = "AUTO",
+                        label_size = 24,
+                        label_fontface = "bold")
+ggsave(filename = sprintf("plot_sync_async_mean_vars_combined.png"),
+       plot = plot_mean_vars_combined, 
+       bg = "white",
+       path = plotsFolder,
+       device = "png", scale = 2, width = 18, height = 12, units = "cm",
+       dpi = 300, limitsize = TRUE)
+```
+
+# Examples of realizations of synchronous and asynchronous updating with and without noise 
+
+```{r st-state-async-and-sync-examples}
+num_cells= 5
+getPalette = colorRampPalette(brewer.pal(8, "Dark2"))
+
+#######  determinstic realizations
+#### sync
+outSync0 <- read.table(file = paste0(path, "out.sync.sig0_net_1.timesteps"), sep = " ", header = FALSE)
+outSync0 <- outSync0[, -(num_nodes + 3)]
+colnames(outSync0) <- c("cell", "t", paste0("G", 1:num_nodes))
+timesteps <- melt(outSync0, id.vars = c("cell", "t"), variable.name = "gene", value.name = "exprLevel")
+
+plots <- list()
+for(cellNum in 1:num_cells){
+  if(cellNum == 1) {
+    plots[[cellNum]] <- ggplot(timesteps[timesteps$cell == cellNum, ], aes(x = t, y = exprLevel)) +
+      geom_line(aes(color = gene)) +
+      theme_gray() + 
+      theme(plot.title = element_text(size=12, face="bold", hjust = 0.5),
+            axis.title.x = element_text(size=12, face="bold"),
+            axis.title.y = element_text(size=12, face="bold"),
+            axis.text.x = element_text(size=10, face="bold"),
+            axis.text.y = element_text(size=10, face="bold"),
+            legend.position = "none") +
+      scale_color_manual(values = getPalette(num_nodes)) +
+      labs(x = "Time step", y = "Expr. level",
+           subtitle = "sync. updating") +
+      ylim(0,100)
+  } else {
+    
+    plots[[cellNum]] <- ggplot(timesteps[timesteps$cell == cellNum, ], aes(x = t, y = exprLevel))+
+      geom_line(aes(color = gene)) +
+      theme_gray() + 
+      theme(plot.title = element_text(size=12, face="bold", hjust = 0.5),
+            axis.title.x = element_text(size=12, face="bold"),
+            axis.title.y = element_text(size=12),
+            axis.text.x = element_text(size=10, face="bold"),
+            axis.text.y = element_text(size=10, face="bold"),
+            legend.position = "none") +
+      scale_color_manual(values = getPalette(num_nodes)) +
+      labs(x = "Time step", y = " ",
+           subtitle = "sync. updating") +
+      ylim(0,100)
+  }
+}
+
+#### async
+outAsync0 <- read.table(file = paste0(path, "out.async.sig0_net_1.timesteps"), sep = " ", header = FALSE)
+outAsync0 <- outAsync0[, -(num_nodes + 3)]
+colnames(outAsync0) <- c("cell", "t", paste0("G", 1:num_nodes))
+timesteps <- melt(outAsync0, id.vars = c("cell", "t"), variable.name = "gene", value.name = "exprLevel")
+
+for(cellNum in 1:num_cells){
+  if(cellNum == 1) {
+    plots[[cellNum + num_cells]] <- ggplot(timesteps[timesteps$cell == cellNum, ], aes(x = t, y = exprLevel))+
+      geom_line(aes(color = gene)) +
+      theme_gray() + 
+      theme(plot.title = element_text(size=12, face="bold", hjust = 0.5),
+            axis.title.x = element_text(size=12, face="bold"),
+            axis.title.y = element_text(size=12, face="bold"),
+            axis.text.x = element_text(size=10, face="bold"),
+            axis.text.y = element_text(size=10, face="bold"),
+            legend.position = "none") +
+      scale_color_manual(values = getPalette(num_nodes)) +
+      labs(x = "Time step", y = "Expr. level",
+           subtitle = "async. updating") +
+      ylim(0,100)
+  } else {
+    plots[[cellNum + num_cells]] <- ggplot(timesteps[timesteps$cell == cellNum, ], aes(x = t, y = exprLevel))+
+      geom_line(aes(color = gene)) +
+      theme_gray() + 
+      theme(plot.title = element_text(size=12, face="bold", hjust = 0.5),
+            axis.title.x = element_text(size=12, face="bold"),
+            axis.title.y = element_text(size=12),
+            axis.text.x = element_text(size=10, face="bold"),
+            axis.text.y = element_text(size=10, face="bold"),
+            legend.position = "none") +
+      scale_color_manual(values = getPalette(num_nodes)) +
+      labs(x = "Time step", y = " ",
+           subtitle = "async. updating") +
+      ylim(0,100)
+  }
+}
+
+#######  stoch realizations
+#### sync
+outSync10 <- read.table(file = paste0(path, "out.sync.sig10_net_1.timesteps"), sep = " ", header = FALSE)
+outSync10 <- outSync10[, -(num_nodes + 3)]
+colnames(outSync10) <- c("cell", "t", paste0("G", 1:num_nodes))
+timesteps <- melt(outSync10, id.vars = c("cell", "t"), variable.name = "gene", value.name = "exprLevel")
+
+for(cellNum in 1:num_cells){
+  if(cellNum == 1) {
+    plots[[cellNum + 2*num_cells]] <- ggplot(timesteps[timesteps$cell == cellNum, ], aes(x = t, y = exprLevel))+
+      geom_line(aes(color = gene)) +
+      theme_gray() + 
+      theme(plot.title = element_text(size=12, face="bold", hjust = 0.5),
+            axis.title.x = element_text(size=12, face="bold"),
+            axis.title.y = element_text(size=12, face="bold"),
+            axis.text.x = element_text(size=10, face="bold"),
+            axis.text.y = element_text(size=10, face="bold"),
+            legend.position = "none") +
+      scale_color_manual(values = getPalette(num_nodes)) +
+      labs(x = "Time step", y = "Expr. level",
+           subtitle = "sync. updating") +
+      ylim(0,100)
+  } else {
+    plots[[cellNum + 2*num_cells]] <- ggplot(timesteps[timesteps$cell == cellNum, ], aes(x = t, y = exprLevel))+
+      geom_line(aes(color = gene)) +
+      theme_gray() + 
+      theme(plot.title = element_text(size=12, face="bold", hjust = 0.5),
+            axis.title.x = element_text(size=12, face="bold"),
+            axis.title.y = element_text(size=12, face="bold"),
+            axis.text.x = element_text(size=10, face="bold"),
+            axis.text.y = element_text(size=10, face="bold"),
+            legend.position = "none") +
+      scale_color_manual(values = getPalette(num_nodes)) +
+      labs(x = "Time step", y = " ",
+           subtitle = "sync. updating") +
+      ylim(0,100)
+    
+  }
+  
+}
+
+#### async
+outAsync10 <- read.table(file = paste0(path, "out.async.sig10_net_1.timesteps"), sep = " ", header = FALSE)
+outAsync10 <- outAsync10[, -(num_nodes + 3)]
+colnames(outAsync10) <- c("cell", "t", paste0("G", 1:num_nodes))
+timesteps <- melt(outAsync10, id.vars = c("cell", "t"), variable.name = "gene", value.name = "exprLevel")
+
+for(cellNum in 1:num_cells){
+  if(cellNum == 1){
+    plots[[cellNum + 3*num_cells]] <- ggplot(timesteps[timesteps$cell == cellNum, ], aes(x = t, y = exprLevel))+
+      geom_line(aes(color = gene)) +
+      theme_gray() + 
+      theme(plot.title = element_text(size=12, face="bold", hjust = 0.5),
+            axis.title.x = element_text(size=12, face="bold"),
+            axis.title.y = element_text(size=12, face="bold"),
+            axis.text.x = element_text(size=10, face="bold"),
+            axis.text.y = element_text(size=10, face="bold"),
+            legend.position = "none") +
+      scale_color_manual(values = getPalette(num_nodes)) +
+      labs(x = "Time step", y = "Expr. level",
+           subtitle = "async. updating") +
+      ylim(0,100)
+  } else {
+    plots[[cellNum + 3*num_cells]] <- ggplot(timesteps[timesteps$cell == cellNum, ], aes(x = t, y = exprLevel))+
+      geom_line(aes(color = gene)) +
+      theme_gray() + 
+      theme(plot.title = element_text(size=12, face="bold", hjust = 0.5),
+            axis.title.x = element_text(size=12, face="bold"),
+            axis.title.y = element_text(size=12, face="bold"),
+            axis.text.x = element_text(size=10, face="bold"),
+            axis.text.y = element_text(size=10, face="bold"),
+            legend.position = "none") +
+      scale_color_manual(values = getPalette(num_nodes)) +
+      labs(x = "Time step", y = " ",
+           subtitle = "async. updating") +
+      ylim(0,100)
+  }
+  
+}
+
+# get legend
+legend_for_combined_plots <- get_legend(
+  # create some space to the left of the legend
+  plots[[1]] +
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.title = element_text(face = "bold"),
+          legend.text = element_text(size=10, face="bold"),
+          legend.key = element_rect(fill = "white", colour = "black"),
+          legend.position = "bottom")
+)
+
+```
+
+```{r combine-plots-st-state-async-and-sync-examples}
+plot_realizations <- plot_grid(plots[[1]], plots[[2]], plots[[3]], plots[[4]], plots[[5]],
+                               plots[[6]], plots[[7]], plots[[8]], plots[[9]], plots[[10]], 
+                               plots[[11]], plots[[12]], plots[[13]], plots[[14]], plots[[15]],
+                               plots[[16]], plots[[17]], plots[[18]], plots[[19]], plots[[20]],
+                               scale = c(0.90, 0.90, 0.90, 0.90, 0.90, 0.90, 0.90, 0.90, 0.90, 0.90,
+                                         0.90, 0.90, 0.90, 0.90, 0.90, 0.90, 0.90, 0.90, 0.90, 0.90),
+                               labels = "AUTO",
+                               label_size = 20,
+                               label_fontface = "bold",
+                               ncol = 5)
+plot_realizations_with_legend <- plot_grid(plot_realizations, legend_for_combined_plots, 
+                                           ncol = 1, rel_heights = c(1, .1))
+ggsave(filename = sprintf("plot_realization_examples_wwo_noise.png"),
+       plot = plot_realizations_with_legend, 
+       bg = "white",
+       path = plotsFolder, device = "png", 
+       scale = 2, width = 18, height = 15, units = "cm",
+       dpi = 300, limitsize = TRUE)
+```
+
+#  Population size
+```{r read-data-popsize}
+jointResultsFolder = "20211203_ER_40node_0.05dens_joint_popsizes"
+pathToJointResultsFolder = paste0("../results/", jointResultsFolder)
+
+# read results and split into sel & neutr
+allNetsResults_joint <- read.table(paste0(pathToJointResultsFolder, "/allNetsResults.txt"), 
+                                   sep = "\t", header = TRUE)
+```
+
+```{r popsize}
+selResults_popsizes <- allNetsResults_joint[allNetsResults_joint$scen == "sel", ]
+selResults_popsizes$pop_size <- as.factor(selResults_popsizes$pop_size)
+plot_popsizes <- ggplot(selResults_popsizes, aes(x = pop_size, y = s_g_area_abs, fill = pop_size)) +
+  geom_boxplot(width = 0.2, outlier.alpha = 0.01, outlier.size = 0.2) + 
+  #geom_jitter(width = 0.1, alpha = 0.01) +
+  theme_pubclean() + 
+  theme(plot.title = element_text(size=12, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "right") +
+  labs(x = "Population size", y = expression(paste(bold("Selective pressure "), "|", bold(p), "|")),
+      fill = "Population size") +
+  scale_fill_brewer(palette="OrRd")
+plot_popsizes
+
+ggsave(sprintf("plot_popsizes.png"), 
+       plot = plot_popsizes, 
+       device = NULL, 
+       path = plotsFolder, 
+       scale = 1.7, width = 8, height = 4, units = "cm",
+       dpi = 300, limitsize = FALSE)
+```
+
+#  Stability of mean expression level 
+
+```{r test-means-during-evolution}
+jointResultsFolder = "20211201_40node_0.05dens_joint_topos"
+pathToJointResultsFolder = paste0("../results/", jointResultsFolder)
+
+# read results and split into sel & neutr
+allNetsResults_joint <- read.table(paste0(pathToJointResultsFolder, "/allNetsResults_prepped_joint.txt"), 
+                                   sep = "\t", header = TRUE)
+
+# rename nets
+allNetsResults_joint[allNetsResults_joint$topo == "BA", "net"] <- 
+  allNetsResults_joint[allNetsResults_joint$topo == "BA", "net"] + 1000
+allNetsResults_joint[allNetsResults_joint$topo == "WS", "net"] <- 
+  allNetsResults_joint[allNetsResults_joint$topo == "WS", "net"] + 2000
+
+allNetsResults_joint$topo <- factor(allNetsResults_joint$topo, levels = c("ER", "BA", "WS"))
+
+selResults <- allNetsResults_joint[allNetsResults_joint$scen == "sel", ]
+neutrResults <- allNetsResults_joint[allNetsResults_joint$scen == "neu", ]
+```
+
+```{r plots-means-correlations-sel-and-neu}
+cortest_sel <- cor.test(selResults$meanP_1, selResults$meanP_10000, method = "pearson")
+plot_means_sel <- ggplot(selResults, aes(x = meanP_1, y = meanP_10000)) +
+  geom_point(alpha = 0.01) +
+  geom_abline(slope = 1, size = 1.5, color = "#b30000", linetype = "solid", alpha = 0.5) +
+  theme_minimal() + 
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        plot.title = element_text(size=16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Mean expression level, gen 1", y = "Mean expression level, gen 10k",
+       subtitle = paste0("Pearson's r = ", round(as.numeric(cortest_sel[4]), digits = 2), 
+                         ", p-value < 2.2e-16"))
+plot_means_sel <- ggMarginal(plot_means_sel + geom_point(col = "transparent"), 
+                                          type = "histogram")
+plot_means_sel
+ggsave(sprintf("plot_means_sel.png"), 
+       plot = plot_means_sel, 
+       device = NULL, 
+       path = plotsFolder, 
+       scale = 1.7, width = 8, height = 8, units = "cm",
+       dpi = 300, limitsize = FALSE)
+
+
+cortest_neu <- cor.test(neutrResults$meanP_1, neutrResults$meanP_10000, method = "pearson")
+plot_means_neu <- ggplot(neutrResults, aes(x = meanP_1, y = meanP_10000)) +
+  geom_point(alpha = 0.01) +
+  geom_abline(slope = 1, size = 1.5, color = "#b30000", linetype = "solid", alpha = 0.5) +
+  theme_minimal() + 
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        plot.title = element_text(size=16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Mean expression level, gen 1", y = "Mean expression level, gen 10k",
+       subtitle = paste0("Pearson's r = ", trunc(as.numeric(cortest_neu[4])*10^2)/10^2, 
+                         ", p-value < 2.2e-16"))
+plot_means_neu <- ggMarginal(plot_means_neu + geom_point(col = "transparent"), 
+                                          type = "histogram")
+plot_means_neu
+ggsave(sprintf("plot_means_neu.png"), 
+       plot = plot_means_neu, 
+       device = NULL, 
+       path = plotsFolder, 
+       scale = 1.7, width = 8, height = 8, units = "cm",
+       dpi = 300, limitsize = FALSE)
+
+
+cortest_sel_var <- cor.test(selResults$varP_1, selResults$varP_10000, method = "pearson")
+plot_var_sel <- ggplot(selResults, aes(x = varP_1, y = varP_10000)) +
+  geom_point(alpha = 0.01) +
+  geom_abline(slope = 1, size = 1.5, color = "#b30000", linetype = "solid", alpha = 0.5) +
+  theme_minimal() + 
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        plot.title = element_text(size=16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Expression level variance, gen 1", y = "Expression level variance, gen 10k",
+       subtitle = paste0("Pearson's r = ", round(as.numeric(cortest_sel_var[4]), digits = 2), 
+                         ", p-value < 2.2e-16"))
+plot_var_sel <- ggMarginal(plot_var_sel + geom_point(col = "transparent"), 
+                                          type = "histogram")
+plot_var_sel
+ggsave(sprintf("plot_var_sel.png"), 
+       plot = plot_var_sel, 
+       device = NULL, 
+       path = plotsFolder, 
+       scale = 1.7, width = 8, height = 8, units = "cm",
+       dpi = 300, limitsize = FALSE)
+
+cortest_neu_var <- cor.test(neutrResults$varP_1, neutrResults$varP_10000, method = "pearson")
+plot_var_neu <- ggplot(neutrResults, aes(x = varP_1, y = varP_10000)) +
+  geom_point(alpha = 0.01) +
+  geom_abline(slope = 1, size = 1.5, color = "#b30000", linetype = "solid", alpha = 0.5) +
+  theme_minimal() + 
+  theme(plot.background = element_rect(fill = "white", color = "white"),
+        plot.title = element_text(size=16, face = "bold", hjust = 0.5),
+        plot.subtitle = element_text(size=12, face="bold"),
+        axis.title.x = element_text(size=16, face="bold"),
+        axis.title.y = element_text(size=16, face="bold"),
+        axis.text.x = element_text(size=10, face="bold"),
+        axis.text.y = element_text(size=10, face="bold"),
+        legend.position = "left") +
+  labs(x = "Expression level variance, gen 1", y = "Expression level variance, gen 10k",
+       subtitle = paste0("Pearson's r = ", trunc(as.numeric(cortest_neu[4])*10^2)/10^2, 
+                         ", p-value < 2.2e-16"))
+plot_var_neu <- ggMarginal(plot_var_neu + geom_point(col = "transparent"), 
+                                          type = "histogram")
+plot_var_neu
+ggsave(sprintf("plot_var_neu.png"), 
+       plot = plot_var_neu, 
+       device = NULL, 
+       path = plotsFolder, 
+       scale = 1.7, width = 8, height = 8, units = "cm",
+       dpi = 300, limitsize = FALSE)
+```
+
+```{r}
+jointTitle_sel <- ggdraw() + draw_label("Selection",
+                                        size = 20,
+                                        fontface = 'bold')
+jointTitle_neu <- ggdraw() + draw_label("Neutrality", 
+                                        size = 20,
+                                        fontface = 'bold')
+jointTitle_combined <- plot_grid(NULL, jointTitle_sel, NULL,
+                                 NULL, jointTitle_neu, NULL,
+                                 labels = c("", "", "", "", "", ""),
+                                 ncol = 6,
+                                 rel_widths = c(0.5, 1, 0.5, 0.5, 1, 0.5))
+
+plot_means_after_evol_correlations <- plot_grid(plot_means_sel, plot_means_neu, 
+                                                plot_var_sel, plot_var_neu,
+                               scale = c(0.90, 0.90, 0.90, 0.90),
+                               labels = "AUTO",
+                               label_size = 20,
+                               label_fontface = "bold",
+                               ncol = 2)
+plot_means_after_evol_correlations <- plot_grid(jointTitle_combined,
+                                      plot_means_after_evol_correlations,
+                                      ncol = 1,
+                                      rel_heights = c(0.1, 1.5))
+
+ggsave(filename = sprintf("plot_means_after_evol_correlations.png"),
+       plot = plot_means_after_evol_correlations, 
+       bg = "white",
+       path = plotsFolder, device = "png", 
+       scale = 1.7, width = 15, height = 16, units = "cm",
+       dpi = 300, limitsize = TRUE)
+```
